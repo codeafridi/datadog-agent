@@ -9,6 +9,7 @@
 package probe
 
 import (
+	"errors"
 	"net"
 	"time"
 
@@ -30,6 +31,12 @@ func newCorrelatedDNSEvent(ev *model.Event, entry *model.ProcessCacheEntry, id u
 		Question: question,
 		Response: response,
 	}
+}
+
+// needsDNSResponseCorrelation reports whether a full DNS response can only reach the profiles through the process of
+// its request, as it has no resolved process in a container of its own
+func needsDNSResponseCorrelation(event *model.Event) bool {
+	return event.ProcessContext.Process.ContainerContext.IsNull() || errors.Is(event.Error, model.ErrNoProcessContext)
 }
 
 // correlateDNSResponseForActivityDump attributes a DNS response to the process that sent the request

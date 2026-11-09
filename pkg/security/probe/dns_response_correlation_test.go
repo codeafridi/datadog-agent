@@ -22,6 +22,7 @@ import (
 	pconfig "github.com/DataDog/datadog-agent/pkg/security/probe/config"
 	"github.com/DataDog/datadog-agent/pkg/security/resolvers"
 	"github.com/DataDog/datadog-agent/pkg/security/resolvers/dns"
+	"github.com/DataDog/datadog-agent/pkg/security/secl/containerutils"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/model"
 	securityprofile "github.com/DataDog/datadog-agent/pkg/security/security_profile"
 	"github.com/DataDog/datadog-agent/pkg/util/ktime"
@@ -57,6 +58,23 @@ func TestNewCorrelatedDNSEvent(t *testing.T) {
 	assert.Equal(t, uint16(0x1234), ev.DNS.ID)
 	assert.Equal(t, question, ev.DNS.Question)
 	assert.Same(t, response, ev.DNS.Response)
+}
+
+func TestNeedsDNSResponseCorrelation(t *testing.T) {
+	newResponse := func(containerID containerutils.ContainerID, err error) *model.Event {
+		entry := model.NewPlaceholderProcessCacheEntry(42, 42, false)
+		entry.ContainerContext.ContainerID = containerID
+		ev := model.NewFakeEvent()
+		ev.ProcessCacheEntry = entry
+		ev.ProcessContext = &entry.ProcessContext
+		ev.Error = err
+		return ev
+	}
+
+	assert.True(t, needsDNSResponseCorrelation(newResponse("", nil)), "host process")
+	assert.True(t, needsDNSResponseCorrelation(newResponse("", model.ErrNoProcessContext)), "unresolved process outside of a container")
+	assert.True(t, needsDNSResponseCorrelation(newResponse("abc", model.ErrNoProcessContext)), "unresolved process in a container")
+	assert.False(t, needsDNSResponseCorrelation(newResponse("abc", nil)), "resolved process in a container")
 }
 
 // capturedDNSEvent holds everything the assertions need from a correlated event. It has to be
