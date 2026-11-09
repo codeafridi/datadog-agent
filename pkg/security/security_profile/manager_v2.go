@@ -716,8 +716,8 @@ func (m *ManagerV2) ProcessEvent(event *model.Event) {
 		return
 	}
 
-	if event.Error != nil && !activity_tree.IsInsertableEventError(event.Error) {
-		m.incrementInsertionError(event.GetEventType(), event.Error, insertionErrorDropped)
+	if activity_tree.EventInsertionError(event) != nil {
+		m.incrementEventWithError(event, insertionErrorDropped)
 		return
 	}
 
@@ -1169,7 +1169,7 @@ func (m *ManagerV2) insertEventIntoProfile(event *model.Event) (*profile.Profile
 	secprof.Unlock()
 	if err != nil {
 		if event.Error != nil {
-			m.incrementInsertionError(event.GetEventType(), event.Error, insertionErrorDropped)
+			m.incrementEventWithError(event, insertionErrorDropped)
 		} else if !activity_tree.IsExpectedFilterError(err) {
 			m.incrementInsertionError(event.GetEventType(), err, insertionErrorDropped)
 			seclog.Debugf("couldn't insert event into profile: %v", err)
@@ -1181,7 +1181,7 @@ func (m *ManagerV2) insertEventIntoProfile(event *model.Event) (*profile.Profile
 		if unattributed {
 			outcome = insertionErrorUnattributed
 		}
-		m.incrementInsertionError(event.GetEventType(), event.Error, outcome)
+		m.incrementEventWithError(event, outcome)
 	}
 
 	// the unattributed activity isn't compared with the activity of the processes, what is new there may not be new
@@ -1656,6 +1656,16 @@ func (m *ManagerV2) incrementInsertionError(eventType model.EventType, err error
 	if entry, ok := m.insertionErrors[key]; ok {
 		entry.Inc()
 	}
+}
+
+// incrementEventWithError records an event carrying an error, labeled with the error that kept it out of the tree if
+// there is one
+func (m *ManagerV2) incrementEventWithError(event *model.Event, outcome string) {
+	err := activity_tree.EventInsertionError(event)
+	if err == nil {
+		err = event.Error
+	}
+	m.incrementInsertionError(event.GetEventType(), err, outcome)
 }
 
 // evictUnusedNodes performs periodic eviction of non-touched nodes from all active profiles
