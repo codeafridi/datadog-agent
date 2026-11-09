@@ -9,6 +9,7 @@
 package securityprofile
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -32,6 +33,7 @@ import (
 	cgroupModel "github.com/DataDog/datadog-agent/pkg/security/resolvers/cgroup/model"
 	"github.com/DataDog/datadog-agent/pkg/security/resolvers/hash"
 	"github.com/DataDog/datadog-agent/pkg/security/resolvers/mount"
+	"github.com/DataDog/datadog-agent/pkg/security/resolvers/path"
 	"github.com/DataDog/datadog-agent/pkg/security/resolvers/tags"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/containerutils"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/model"
@@ -1171,6 +1173,62 @@ func TestManagerV2_ProcessEvent_capsPendingEventsTotal(t *testing.T) {
 	assert.EqualValues(t, maxPending, m.queueSize.Load())
 	assert.EqualValues(t, 1, m.tagResolutionCappedTotal.Load())
 	assert.Zero(t, m.tagResolutionCappedCgroup.Load())
+}
+
+func TestManagerV2_eventsWithError(t *testing.T) {
+	brokenLineage := &model.ErrProcessBrokenLineage{Err: errors.New("missing parent")}
+	countOf := func(m *ManagerV2, eventType model.EventType, errorType string) uint64 {
+		return m.insertionErrors[insertionErrorKey{eventType: eventType, errorType: errorType}].Load()
+	}
+	total := func(m *ManagerV2) uint64 {
+		var total uint64
+		for _, count := range m.insertionErrors {
+			total += count.Load()
+		}
+		return total
+	}
+
+	t.Run("counted and dropped", func(t *testing.T) {
+		m := newTagResolutionTestManagerV2(t, 10, 10)
+		event := newTestEventV2(model.FileOpenEventType, "v1", "known")
+		event.Error = brokenLineage
+
+		m.ProcessEvent(event)
+
+		assert.EqualValues(t, 1, countOf(m, model.FileOpenEventType, activity_tree.InsertionErrorBrokenLineage))
+		assert.EqualValues(t, 1, total(m))
+		assert.Empty(t, m.profiles)
+		assert.Empty(t, m.resolvedCgroups)
+		assert.Empty(t, m.profilePendingEvents)
+	})
+
+	t.Run("not counted outside of profiles", func(t *testing.T) {
+		m := newTagResolutionTestManagerV2(t, 10, 10)
+
+		hostEvent := newTestEventV2(model.FileOpenEventType, "v1", "known")
+		hostEvent.ProcessContext.Process.ContainerContext.ContainerID = ""
+		hostEvent.Error = brokenLineage
+		m.ProcessEvent(hostEvent)
+
+		untracedEvent := newTestEventV2(model.FileOpenEventType, "v1", "known")
+		untracedEvent.Type = uint32(model.FileChmodEventType)
+		untracedEvent.Error = brokenLineage
+		m.ProcessEvent(untracedEvent)
+
+		assert.Zero(t, total(m))
+	})
+
+	t.Run("raised during insertion", func(t *testing.T) {
+		m, _ := newInsertionTestManagerV2(t)
+		event := newTestEventV2(model.FileOpenEventType, "v1", "known")
+		event.Error = &path.ErrPathResolution{Err: errors.New("dentry not found")}
+
+		_, inserted := m.insertEventIntoProfile(event)
+
+		assert.False(t, inserted)
+		assert.EqualValues(t, 1, countOf(m, model.FileOpenEventType, activity_tree.InsertionErrorPathResolution))
+		assert.EqualValues(t, 1, total(m))
+	})
 }
 
 func TestManagerV2_seedMountsForWorkload(t *testing.T) {

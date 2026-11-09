@@ -424,33 +424,57 @@ func IsExpectedFilterError(err error) bool {
 		errors.Is(err, ErrIMDSMissingURL)
 }
 
-// Insertion error type labels used to tag the unexpected-insertion-error metric.
+// Insertion error type labels used to tag the insertion-errors metric.
 // Keep this list bounded to avoid metric tag cardinality explosion.
 const (
-	// InsertionErrorBrokenLineage labels insertion failures caused by a broken process lineage.
+	// InsertionErrorBrokenLineage labels errors caused by a broken process lineage.
 	InsertionErrorBrokenLineage = "broken_lineage"
+	// InsertionErrorNoProcessContext labels events whose process couldn't be resolved.
+	InsertionErrorNoProcessContext = "no_process_context"
+	// InsertionErrorPathResolution labels events whose path couldn't be resolved.
+	InsertionErrorPathResolution = "path_resolution"
+	// InsertionErrorPathResolutionNotCritical labels events whose path was partially resolved.
+	InsertionErrorPathResolutionNotCritical = "path_resolution_not_critical"
+	// InsertionErrorDNSDecoding labels events whose DNS packet couldn't be decoded.
+	InsertionErrorDNSDecoding = "dns_decoding"
 	// InsertionErrorInvalidGenerationType labels insertion failures caused by an invalid generation type.
 	InsertionErrorInvalidGenerationType = "invalid_generation_type"
 	// InsertionErrorProcessNodeNotCreated labels insertion failures where no process node could be created.
 	InsertionErrorProcessNodeNotCreated = "process_node_not_created"
-	// InsertionErrorOther labels any other unexpected insertion failure.
+	// InsertionErrorOther labels any other error.
 	InsertionErrorOther = "other"
 )
 
 // InsertionErrorTypes is the exhaustive list of labels InsertionErrorType can return.
 var InsertionErrorTypes = []string{
 	InsertionErrorBrokenLineage,
+	InsertionErrorNoProcessContext,
+	InsertionErrorPathResolution,
+	InsertionErrorPathResolutionNotCritical,
+	InsertionErrorDNSDecoding,
 	InsertionErrorInvalidGenerationType,
 	InsertionErrorProcessNodeNotCreated,
 	InsertionErrorOther,
 }
 
-// InsertionErrorType categorizes an unexpected insertion error into one of the
-// bounded InsertionErrorTypes labels, suitable for use as a low-cardinality metric tag.
+// InsertionErrorType categorizes the error carried by an event (model.Event.Error) or an unexpected
+// insertion error into one of the bounded InsertionErrorTypes labels, suitable for use as a
+// low-cardinality metric tag.
 func InsertionErrorType(err error) string {
+	var brokenLineageErr *model.ErrProcessBrokenLineage
+	var pathResolutionErr *path.ErrPathResolution
+	var pathResolutionNotCriticalErr *path.ErrPathResolutionNotCritical
 	switch {
-	case errors.Is(err, ErrBrokenLineage):
+	case errors.Is(err, ErrBrokenLineage), errors.As(err, &brokenLineageErr):
 		return InsertionErrorBrokenLineage
+	case errors.Is(err, model.ErrNoProcessContext):
+		return InsertionErrorNoProcessContext
+	case errors.As(err, &pathResolutionErr):
+		return InsertionErrorPathResolution
+	case errors.As(err, &pathResolutionNotCriticalErr):
+		return InsertionErrorPathResolutionNotCritical
+	case errors.Is(err, model.ErrFailedDNSPacketDecoding):
+		return InsertionErrorDNSDecoding
 	case errors.Is(err, ErrInvalidGenerationType):
 		return InsertionErrorInvalidGenerationType
 	case errors.Is(err, ErrProcessNodeNotCreated):
