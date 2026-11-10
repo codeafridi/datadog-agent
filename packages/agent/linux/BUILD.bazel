@@ -111,6 +111,7 @@ dd_pkg_deb(
     srcs = [":whole_distro"],
     out = "debian.deb",
     conflicts = ["datadog-iot-agent"],
+    debug_package = True,
     description = _DESCRIPTION,
     homepage = "http://www.datadoghq.com",
     # vendor = "Datadog <package@datadoghq.com>",
