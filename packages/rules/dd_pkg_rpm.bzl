@@ -7,6 +7,10 @@ load("//packages/rules:description.bzl", "rpm_description")
 _DEFAULT_DEFINES = {
     "__provides_exclude": ".*",
     "__requires_exclude": ".*",
+    # Skip rpmbuild's post-install processing (brp-strip, brp-compress, ...),
+    # so packaged files are left untouched. brp-strip would also corrupt eBPF
+    # objects and fail on read-only files coming from TreeArtifacts.
+    "__spec_install_post": "true",
     "_build_id_links": "none",
 }
 
