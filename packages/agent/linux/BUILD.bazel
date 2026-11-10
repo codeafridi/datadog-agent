@@ -154,6 +154,7 @@ dd_pkg_rpm(
         "datadog-iot-agent",
         "glibc-common < 2.17",
     ],
+    debug_package = True,
     description = _DESCRIPTION,
     epoch = "1",
     group = "System Environment/Daemons",
