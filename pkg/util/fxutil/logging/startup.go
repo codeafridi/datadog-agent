@@ -6,9 +6,9 @@
 package logging
 
 import (
-	"fmt"
 	"io"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"go.uber.org/fx/fxevent"
@@ -57,7 +57,7 @@ func StartStartupTrace(logger fxevent.Logger, operationName, agentVersion string
 			Start:    startedAt.UnixNano(),
 			Type:     "custom",
 			Meta: map[string]string{
-				"fx.trace_id":   fmt.Sprint(l.traceID),
+				"fx.trace_id":   strconv.FormatUint(l.traceID, 10),
 				"process_name":  l.flavor,
 				"agent.version": agentVersion,
 			},
