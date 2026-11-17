@@ -28,9 +28,46 @@ func TestStartupTraceDisabled(t *testing.T) {
 			trace := StartStartupTrace(logger, "startAgent", "test")
 			require.Nil(t, trace)
 			trace.StartPhase("hostname.Get").Finish(errors.New("ignored"))
+			trace.StartPhase("api.StartServer").StartPhase("module.Register").Finish(nil)
 			trace.Finish(nil)
 		})
 	}
+}
+
+func TestStartupTraceNestedPhases(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logger := &FxTracingLogger{flavor: "system-probe", traceID: 123, traceAgentPort: "8126"}
+		trace := StartStartupTrace(logger, "startSystemProbe", "7.test")
+		require.NotNil(t, trace)
+		api := trace.StartPhase("api.StartServer")
+		modules := api.StartPhase("module.Register")
+		create := modules.StartPhase("module.network_tracer.create")
+		time.Sleep(2 * time.Second)
+		create.Finish(errors.New("module initialization failed"))
+		assert.Nil(t, create.StartPhase("finished"))
+		register := modules.StartPhase("module.discovery.register")
+		time.Sleep(3 * time.Second)
+		register.Finish(nil)
+		modules.Finish(nil)
+		api.Finish(nil)
+		spans := trace.complete(nil)
+		require.Len(t, spans, 5)
+		root := spans[4]
+		assert.Equal(t, root.SpanID, spans[0].ParentID)
+		assert.Equal(t, spans[0].SpanID, spans[1].ParentID)
+		assert.Equal(t, spans[1].SpanID, spans[2].ParentID)
+		assert.Equal(t, spans[1].SpanID, spans[3].ParentID)
+		assert.Equal(t, int64(2*time.Second), spans[2].Duration)
+		assert.Equal(t, int64(3*time.Second), spans[3].Duration)
+		assert.Equal(t, int64(5*time.Second), root.Duration)
+		assert.Equal(t, int32(1), spans[2].Error)
+		assert.Zero(t, root.Error, "a recoverable module error need not fail process startup")
+		for _, span := range spans {
+			assert.Equal(t, root.TraceID, span.TraceID)
+			assert.Equal(t, "system-probe", span.Meta["process_name"])
+		}
+		assert.Nil(t, api.StartPhase("finished"))
+	})
 }
 
 func TestStartupTraceRequiresTransport(t *testing.T) {

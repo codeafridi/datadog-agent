@@ -1,4 +1,4 @@
-# Core Agent startup traces
+# Core Agent and system-probe startup traces
 
 Set `DD_FX_TRACING_ENABLED=true` on an Agent with a local trace-agent enabled.
 Alongside the existing Fx startup trace, the core Agent sends a diagnostic trace
@@ -63,6 +63,63 @@ The root includes small gaps between phases, including tracing overhead.
 An error flag on a phase marks a returned error; a recoverable error such as
 core dump setup failure does not mark the root as failed if startup succeeds.
 No configuration values, filenames, or error messages are added to these traces.
+
+## System-probe startup
+
+The same opt-in setting enables a `startSystemProbe` root for system-probe,
+using its configured local trace-agent port:
+
+```text
+service:dd-agent-fx-init operation_name:startSystemProbe resource_name:system-probe
+```
+
+On Windows the executable resource name can be `system-probe.exe`. Both the CLI
+and Windows service startup paths are instrumented. The CLI root starts before
+transparent huge page configuration and signal-handler setup, and ends when
+`startSystemProbe()` returns, before the main loop waits for shutdown. An
+intentionally disabled or externally managed system-probe returns without a root
+error flag. An enabled system-probe that fails to initialize records an error.
+
+Children use operation `startSystemProbe.phase`. In addition to configuration
+access and startup logging, the root contains these phases when applicable:
+
+| Resource | Synchronous work measured |
+| --- | --- |
+| `runtime.DisableTransparentHugePages` | Configuring transparent huge pages (CLI path only). |
+| `signals.setup` | Installing signal handlers (CLI path only). |
+| `logUserAndGroupID` | User/group lookup and logging. |
+| `coredump.Setup` | Core dump setup. |
+| `utils.NewMemoryMonitor` | Reading configuration and creating the memory monitor. |
+| `MemoryMonitor.Start` | Starting the memory monitor. |
+| `setupInternalProfiling` | Applying profiling settings. |
+| `telemetry.register_collectors` | Creating and registering debug/eBPF collectors. |
+| `expvar.launch` | Dispatching the debug HTTP server goroutine. |
+| `api.StartServer` | Creating the listener, loading modules and setting up HTTP serving. |
+
+`api.StartServer` has nested phases for `server.NewListener`, `module.Register`,
+`api.register_handlers`, `startPacketCaptureServer` and `http.Serve.launch`.
+The last two measure synchronous setup/dispatch, not completion of background
+HTTP serving or readiness of its listener.
+
+Within `module.Register`, `modules.preRegister` measures shared eBPF setup on
+Linux or driver initialization on Windows. Each enabled module has separate
+`module.<name>.create` and `module.<name>.register` spans for its constructor and
+endpoint registration. Names are bounded identifiers such as `network_tracer`,
+`event_monitor` and `gpu`; disabled modules have no per-module spans. This separates
+common setup from individual module work, including kernel operations awaited by
+those calls.
+
+`modules.postRegister` measures post-registration work, including lock contention
+collector initialization and BTF cache flushing on Linux. Module selection,
+telemetry configuration and launching periodic statistics updates are also timed.
+Recoverable module errors flag the affected phase while other modules continue
+starting. If no module loads, the API phase and startup root are marked failed.
+
+Nested phase durations include their children: do not add a parent's duration
+to its children's durations. System-probe-lite's early exec handoff happens
+before the Go post-Fx startup path and is outside this trace.
+
+## Delivery and limitations
 
 Traces are opt-in, buffered in memory and sent asynchronously through the
 existing Fx transport after completion. A crash, forced exit, unavailable

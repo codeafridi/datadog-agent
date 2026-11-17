@@ -29,6 +29,7 @@ type StartupTrace struct {
 type StartupPhase struct {
 	span      *Span
 	startedAt time.Time
+	trace     *StartupTrace
 }
 
 // StartStartupTrace starts an independent diagnostic trace using the opt-in Fx
@@ -74,6 +75,20 @@ func (t *StartupTrace) StartPhase(resource string) *StartupPhase {
 	if t == nil || t.root == nil {
 		return nil
 	}
+	return t.startPhase(t.root.SpanID, resource)
+}
+
+// StartPhase starts a nested phase for synchronous work within this phase.
+// Finish all children before finishing their parent. The same naming and
+// goroutine restrictions as StartupTrace.StartPhase apply.
+func (p *StartupPhase) StartPhase(resource string) *StartupPhase {
+	if p == nil || p.span == nil || p.trace.root == nil {
+		return nil
+	}
+	return p.trace.startPhase(p.span.SpanID, resource)
+}
+
+func (t *StartupTrace) startPhase(parentID uint64, resource string) *StartupPhase {
 	startedAt := time.Now()
 	s := &Span{
 		Service:  t.root.Service,
@@ -81,13 +96,13 @@ func (t *StartupTrace) StartPhase(resource string) *StartupPhase {
 		Resource: resource,
 		TraceID:  t.root.TraceID,
 		SpanID:   rand.Uint64(),
-		ParentID: t.root.SpanID,
+		ParentID: parentID,
 		Start:    startedAt.UnixNano(),
 		Type:     "custom",
 		Meta:     t.root.Meta,
 	}
 	t.spans = append(t.spans, s)
-	return &StartupPhase{span: s, startedAt: startedAt}
+	return &StartupPhase{span: s, startedAt: startedAt, trace: t}
 }
 
 // Finish ends the phase, recording only the error flag, not the error text.

@@ -2,7 +2,7 @@
 
 This page attempts to list useful tools and resources to troubleshoot and profile a running Agent.
 
-For startup bottlenecks, see [Core Agent startup traces](startup-traces.md).
+For startup bottlenecks, see [Core Agent and system-probe startup traces](startup-traces.md).
 
 ## [pprof](https://golang.org/pkg/net/http/pprof/)
 
