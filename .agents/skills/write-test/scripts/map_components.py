@@ -7,13 +7,14 @@
 
 Usage, from the repository root:
     map_components.py                # the Go files changed against the merge base with origin/main
-    map_components.py <path>...      # files or directories, e.g. the ones a feature touches
+    map_components.py <path>...      # Go files or directories, e.g. the ones a feature touches
 
 For every component or bundle reached, it prints its team, the fx modules and mocks available to wire it in a test,
 and the packages that import it (its consumers, the next hops of the pipeline). A pkg/ path is mapped to the
 components importing it. The output is Markdown, meant to be read by the write-test skill.
 """
 
+import functools
 import os
 import re
 import subprocess
@@ -21,8 +22,10 @@ import sys
 from collections import defaultdict
 
 MODULE = "github.com/DataDog/datadog-agent"
-# directories that hold a way to build the component in a test, from the most to the least real
+# subdirectories that hold a way to build the component in a test, from the most to the least real
 WIRING_DIRS = ["fx", "impl", "fx-mock", "mock", "fx-noop", "noop-impl"]
+# subdirectories of a component that are not components themselves
+COMPONENT_SUBDIRS = set(WIRING_DIRS) | {"def"}
 MAX_CONSUMERS = 8
 
 
@@ -31,46 +34,57 @@ def git(*args):
 
 
 def changed_go_files():
-    base = git("merge-base", "HEAD", "origin/main").strip()
+    try:
+        base = git("merge-base", "HEAD", "origin/main").strip()
+    except subprocess.CalledProcessError:
+        sys.exit("origin/main not found: fetch it (git fetch origin main), or pass the paths to map explicitly.")
     tracked = git("diff", "--name-only", base).splitlines()
     untracked = git("ls-files", "--others", "--exclude-standard").splitlines()
     return sorted({p for p in tracked + untracked if p.endswith(".go") and os.path.exists(p)})
 
 
 def expand(paths):
+    """Return the Go files of the given files and directories, warning about the arguments that hold none."""
     files = []
     for path in paths:
         if os.path.isdir(path):
-            files += [p for p in git("ls-files", "--", path).splitlines() if p.endswith(".go")]
+            found = [p for p in git("ls-files", "--", path).splitlines() if p.endswith(".go")]
+        elif os.path.isfile(path) and path.endswith(".go"):
+            found = [path]
         else:
-            files.append(path)
+            found = []
+        if not found:
+            print(f"warning: ignoring `{path}`: not a Go file or a directory holding tracked Go files", file=sys.stderr)
+        files += found
     return files
 
 
-def component_root(path):
-    """Return (root, kind) of the component or bundle containing path, or (None, None) outside comp/."""
-    directory = os.path.dirname(path)
-    while directory.startswith("comp/") or directory == "comp":
-        if os.path.exists(os.path.join(directory, "def", "component.go")):
-            return directory, "component"
-        if os.path.exists(os.path.join(directory, "component.go")):
-            return directory, "component (legacy layout)"
-        if os.path.exists(os.path.join(directory, "bundle.go")):
-            return directory, "bundle"
-        if os.path.basename(directory) in WIRING_DIRS + ["def"]:
-            directory = os.path.dirname(directory)
-            continue
+def group_by_package(files):
+    packages = defaultdict(list)
+    for path in files:
+        packages[os.path.dirname(path)].append(path)
+    return packages
+
+
+@functools.cache
+def package_root(directory):
+    """Return (root, kind) of the component or bundle containing the package directory, or (None, None)."""
+    while directory.startswith("comp/"):
+        # def/, fx/, impl/... belong to the component above them, even when they hold a component.go
+        if os.path.basename(directory) not in COMPONENT_SUBDIRS:
+            if os.path.exists(os.path.join(directory, "def", "component.go")):
+                return directory, "component"
+            if os.path.exists(os.path.join(directory, "component.go")):
+                return directory, "component (legacy layout)"
+            if os.path.exists(os.path.join(directory, "bundle.go")):
+                return directory, "bundle"
         directory = os.path.dirname(directory)
     return None, None
 
 
-def team(root, kind):
-    candidates = [
-        os.path.join(root, "def", "component.go"),
-        os.path.join(root, "component.go"),
-        os.path.join(root, "bundle.go"),
-    ]
-    for candidate in candidates:
+def team(root):
+    for name in ("def/component.go", "component.go", "bundle.go"):
+        candidate = os.path.join(root, name)
         if os.path.exists(candidate):
             with open(candidate, encoding="utf-8") as f:
                 match = re.search(r"^// team: (.+)$", f.read(), re.MULTILINE)
@@ -79,20 +93,38 @@ def team(root, kind):
     return "?"
 
 
+def declares_module(directory):
+    """Return whether a non-test Go file of the directory declares a Module() function."""
+    for name in os.listdir(directory):
+        if name.endswith(".go") and not name.endswith("_test.go"):
+            with open(os.path.join(directory, name), encoding="utf-8") as f:
+                if re.search(r"^func Module\(", f.read(), re.MULTILINE):
+                    return True
+    return False
+
+
+def wiring(root, kind):
+    """List what can build the component in a test."""
+    found = [f"`{d}/`" for d in WIRING_DIRS if os.path.isdir(os.path.join(root, d))]
+    if kind == "bundle":
+        found.insert(0, "`Bundle()`")
+    elif kind == "component (legacy layout)":
+        # the root package holds the fx module and, often, the mock
+        if declares_module(root):
+            found.insert(0, "root `Module()`")
+        found += [f"`{name}`" for name in sorted(os.listdir(root)) if name.endswith("_mock.go")]
+    return found
+
+
+@functools.cache
 def importers(package_dir):
     """Return the directories of the non-test Go files importing package_dir."""
     pattern = f'"{MODULE}/{package_dir}"'
     try:
         output = git("grep", "-l", "--fixed-strings", pattern, "--", "*.go", ":!*_test.go")
     except subprocess.CalledProcessError:  # no match
-        return set()
-    return {os.path.dirname(p) for p in output.splitlines()}
-
-
-def describe(directory):
-    """Name a consumer directory by its component or bundle, or by the directory itself."""
-    root, _ = component_root(os.path.join(directory, "x.go"))
-    return root or directory
+        return frozenset()
+    return frozenset(os.path.dirname(p) for p in output.splitlines())
 
 
 def main():
@@ -101,49 +133,44 @@ def main():
         print("No Go file to map.")
         return
 
-    components = defaultdict(set)  # root -> changed files
+    changed = defaultdict(set)  # root -> changed files
     kinds = {}
     via_pkg = defaultdict(set)  # root -> pkg/ packages it imports
-    unmapped = []
-    for path in files:
-        root, kind = component_root(path)
+    unmapped = {}  # package -> number of files
+    for package_dir, package_files in group_by_package(files).items():
+        root, kind = package_root(package_dir)
         if root:
-            components[root].add(path)
+            changed[root].update(package_files)
             kinds[root] = kind
             continue
-        package_dir = os.path.dirname(path)
-        reached = {component_root(os.path.join(d, "x.go")) for d in importers(package_dir)}
-        reached = {r for r in reached if r[0]}
+        reached = {package_root(d) for d in importers(package_dir)} - {(None, None)}
         if not reached:
-            unmapped.append(path)
+            unmapped[package_dir] = len(package_files)
         for root, kind in reached:
             via_pkg[root].add(package_dir)
             kinds[root] = kind
 
     print("| Component | Kind | Team | Reached by | Test wiring | Consumers |")
     print("| --- | --- | --- | --- | --- | --- |")
-    for root in sorted(set(components) | set(via_pkg)):
-        reached_by = sorted(f"`{os.path.relpath(p, root)}`" for p in components.get(root, ()))
+    for root in sorted(set(changed) | set(via_pkg)):
+        reached_by = sorted(f"`{os.path.relpath(p, root)}`" for p in changed.get(root, ()))
         reached_by += sorted(f"imports `{p}`" for p in via_pkg.get(root, ()))
-        wiring = [f"`{d}/`" for d in WIRING_DIRS if os.path.isdir(os.path.join(root, d))]
-        if kinds[root] == "bundle":
-            wiring.insert(0, "`Bundle()`")
         def_dir = os.path.join(root, "def") if os.path.isdir(os.path.join(root, "def")) else root
-        consumers = sorted({describe(d) for d in importers(def_dir)} - {root})
+        consumers = sorted({package_root(d)[0] or d for d in importers(def_dir)} - {root})
         shown = ", ".join(f"`{c}`" for c in consumers[:MAX_CONSUMERS])
         if len(consumers) > MAX_CONSUMERS:
             shown += f", +{len(consumers) - MAX_CONSUMERS} more"
         print(
-            f"| `{root}` | {kinds[root]} | {team(root, kinds[root])} | {', '.join(reached_by)} "
-            f"| {', '.join(wiring) or '-'} | {shown or '-'} |"
+            f"| `{root}` | {kinds[root]} | {team(root)} | {', '.join(reached_by)} "
+            f"| {', '.join(wiring(root, kinds[root])) or '-'} | {shown or '-'} |"
         )
     if unmapped:
         print(
-            "\nNo component imports these packages directly: pass their importers (`git grep -l '\"<import path>\"'`) to"
+            "\nNo component imports these packages directly: pass their importers (`git grep -l '\"<import path>\"'`)"
         )
-        print("this script to follow the pipeline up to a component, or test them as plain packages:")
-        for path in unmapped:
-            print(f"- `{path}`")
+        print("to this script to follow the pipeline up to a component, or test them as plain packages:")
+        for package_dir in sorted(unmapped):
+            print(f"- `{package_dir}` ({unmapped[package_dir]} file(s))")
 
 
 if __name__ == "__main__":

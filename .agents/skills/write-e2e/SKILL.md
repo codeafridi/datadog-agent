@@ -44,7 +44,7 @@ Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, th
 
 ## Step 1 — Gate the scope
 
-Invoke `e2e-audit` with the behavior. Continue to Step 2 only if the verdict is that E2E is justified; on any other verdict, report it, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that unit or integration test. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
+When the caller already passed an `e2e-audit verdict: E2E justified` (the `write-test` skill does), skip the audit and go to Step 2. Otherwise invoke `e2e-audit` with the behavior. Continue to Step 2 only if the verdict is that E2E is justified; on any other verdict, report it, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that unit or integration test. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
 Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 

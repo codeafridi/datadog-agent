@@ -2,7 +2,7 @@
 
 An integration test runs the components of a pipeline together, in-process, so that it catches the pieces disagreeing with each other, which unit tests on each piece miss. Its value comes from what it keeps real. Each section below starts with the rule, then why it matters.
 
-Worked examples on `main`: `comp/healthplatform/invalidconfig_integration_test.go` and `comp/healthplatform/missedbytes_integration_test.go`. `comp/healthplatform/invalidconfig_payload_integration_test.go` ([#60753](https://github.com/DataDog/datadog-agent/pull/60753)) applies every pattern below.
+Worked examples on `main`: `comp/healthplatform/invalidconfig_integration_test.go` and `comp/healthplatform/missedbytes_integration_test.go`. [#60753](https://github.com/DataDog/datadog-agent/pull/60753) adds `comp/healthplatform/invalidconfig_payload_integration_test.go`, which applies every pattern below; read it from that PR until it is merged.
 
 ## Placement and naming
 
@@ -35,7 +35,10 @@ deps := fxutil.Test[struct {
 
 When the input is configuration, write real files to `t.TempDir()` and load them with the real config components (`config.Module()` with `config.NewAgentParams(path)`, `sysprobeconfigfx.Module()`), not `config.NewMockFromYAML`. The config mocks skip the post-init fixups and allow a dynamic schema, so they don't load configuration like the Agent does.
 
-The config components load into the global configurations. Reset them to the state the Agent starts with: `configmock.InitAgentConfigs(t)` (from `pkg/config/mock`, added by #60753; `grep -n "func InitAgentConfigs" pkg/config/mock/*.go` to check it is there). It restores the previous globals and the override functions at the end of the test, so tests don't leak into each other.
+The config components load into the global configurations. Reset them to the state the Agent starts with, and restore them at the end of the test so tests don't leak into each other:
+
+- If `grep -n "func InitAgentConfigs" pkg/config/mock/*.go` finds it (added by #60753), call `configmock.InitAgentConfigs(t)`. It also sets the mock guards, so `configmock.New` returns the same configurations.
+- Otherwise, do what it does in the test: save `pkgconfigsetup.GlobalConfigBuilder()` and `GlobalSystemProbeConfigBuilder()`, call `pkgconfigsetup.InitConfigObjects()`, and restore them with `SetDatadog` and `SetSystemProbe` in `t.Cleanup`. `InitConfigObjects` registers its override functions again on every call, so restore those too, or they pile up across tests. `comp/` may not import `pkg/config/setup` (depguard): prefer adding the helper to `pkg/config/mock` over a lint exception.
 
 Environment variables are read while the configuration is built, so set them first, after clearing the `DD_*` variables of the process: a CI runner's `DD_API_KEY` or `DD_SITE` would otherwise change the result. Use `t.Setenv`, which restores them.
 

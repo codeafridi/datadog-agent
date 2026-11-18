@@ -52,7 +52,7 @@ When the user named a feature and the mapping is ambiguous (several implementati
 
 Invoke the `e2e-audit` skill with the behavior and the pipeline from Step 1. It decides between a unit test, an integration test and new-e2e, by asking which boundary each assertion needs to keep real. Then:
 
-- **E2E justified:** invoke `write-e2e` with the behavior and stop. Mention which hops it named as needing the deployed Agent, so `write-e2e` asserts on those.
+- **E2E justified:** invoke `write-e2e` with the behavior, prefixed with `e2e-audit verdict: E2E justified — <reason>` and the hops it named as needing the deployed Agent, then stop. The prefix lets `write-e2e` skip its own audit, so the behavior is audited once and the two skills can't send it back and forth.
 - **Integration test:** load `references/integration.md` and continue.
 - **Unit test:** continue.
 
@@ -70,7 +70,7 @@ Read the existing tests next to the code first and follow their conventions: hel
 
 **Integration test:** follow `references/integration.md`. In short: build the pipeline with the real `fx/` modules of every hop from Step 1, feed the input the way production does, capture the output at the observable boundary, and assert on the whole output against golden files.
 
-For both, add the `// team:` comment the package's other tests use, and keep each test independent: no order dependency, no global state left behind.
+For both, match the header and build tags of the package's other test files, and keep each test independent: no order dependency, no global state left behind.
 
 ## Step 4 — Wire it into the build
 
@@ -83,7 +83,7 @@ Run it after adding a test file or `testdata/` files, and commit the `BUILD.baze
 ## Step 5 — Validate
 
 1. Run it: `dda inv test --targets=./<package>`. Read the subtest results in the Bazel test log, not only the target status: a test that skips (for example, when a generated file is missing) passes too.
-2. Prove it fails: break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then restore it. A test that still passes was asserting on something else.
+2. Prove it fails: break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and check `git diff` holds only the test change. A test that still passes was asserting on something else.
 3. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
 ## Output
@@ -99,11 +99,11 @@ Report:
 | --- | --- | --- | --- |
 | `TestX/<case>` | `comp/...` | <components wired for real> | <dependency>: <outside the boundary because…> |
 
-**Validated:** <test command result> · <the deliberate break and the failure it produced> · <lint result>
+**Validated:** <test command result> · <the deliberate break, the failure it produced, and that it was reverted> · <lint result>
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 
-The skill succeeded when the test fails on the deliberate break, passes otherwise, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary.
+The skill succeeded when the test fails on the reverted deliberate break and passes otherwise, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. For an integration test, the output is also asserted as a whole (a golden file, or every field of the payload); for a unit test, every case of the table asserts on an output or an error.
 
 ## Example
 
@@ -111,4 +111,4 @@ The skill succeeded when the test fails on the deliberate break, passes otherwis
 
 **Pipeline:** `datadog.yaml`, `system-probe.yaml` and `DD_*` env → `comp/core/config` and `comp/core/sysprobeconfig` (load, validate with `comp/core/schema`) → `comp/healthplatform` checks → store → forwarder → intake.
 
-**Level:** integration — every hop runs in-process, and intake is replaced by a local fakeintake without losing the payload boundary. The first version of this test was a new-e2e suite provisioning an EC2 host per run; it became `comp/healthplatform/invalidconfig_payload_integration_test.go` ([#60753](https://github.com/DataDog/datadog-agent/pull/60753)): the same 9 scenarios and golden reports, in about 4 seconds, failing on the same regressions. What it no longer covers — a real secret backend binary and the systemd environment file — is listed under "Not covered".
+**Level:** integration — every hop runs in-process, and intake is replaced by a local fakeintake without losing the payload boundary. The first version of this test was a new-e2e suite provisioning an EC2 host per run; it became `comp/healthplatform/invalidconfig_payload_integration_test.go` ([#60753](https://github.com/DataDog/datadog-agent/pull/60753)): the same 9 scenarios and golden reports, in about 4 seconds, failing on the same regressions (in review when this skill was written). What it no longer covers — a real secret backend binary and the systemd environment file — is listed under "Not covered".
