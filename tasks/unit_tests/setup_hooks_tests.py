@@ -31,6 +31,8 @@ class SetupHookTests(unittest.TestCase):
                 'copyright',
                 'shell-check-no-set-x',
                 'python-ruff',
+                'buildifier',
+                'rustfmt',
             ],
         )
         for hook in hooks:
