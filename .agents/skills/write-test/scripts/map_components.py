@@ -5,7 +5,7 @@
 # Copyright 2026-present Datadog, Inc.
 """Map Go source paths to the Agent components they belong to, and list how to wire each component in a test.
 
-Usage, from the repository root:
+Usage, from anywhere in the repository:
     map_components.py                # the Go files changed against the merge base with origin/main
     map_components.py <path>...      # Go files or directories, e.g. the ones a feature touches
 
@@ -128,7 +128,12 @@ def importers(package_dir):
 
 
 def main():
-    files = expand(sys.argv[1:]) if len(sys.argv) > 1 else changed_go_files()
+    # paths are matched against repository-relative prefixes such as comp/: resolve the arguments from where they were
+    # typed, then work from the repository root
+    root = git("rev-parse", "--show-toplevel").strip()
+    paths = [os.path.relpath(os.path.abspath(p), root) for p in sys.argv[1:]]
+    os.chdir(root)
+    files = expand(paths) if paths else changed_go_files()
     if not files:
         print("No Go file to map.")
         return

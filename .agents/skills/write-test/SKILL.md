@@ -1,6 +1,6 @@
 ---
 name: write-test
-description: Write the Go test a Datadog Agent change needs, at the right level — a unit test, an integration test wiring the real components with fx and a local fakeintake, or a hand-off to new-e2e. Finds the components the current diff touches, or asks which feature to test and maps the components it involves, then writes, wires and validates the test. Use when asked to "write a test", "add tests for my change", "test this feature", "cover this end to end", "make this an integration test", or "replace this e2e test with something cheaper". Not for running existing tests (run-e2e), judging an existing suite only (e2e-audit), or Python tests.
+description: Write the Go test a Datadog Agent change needs, at the right level — a unit test, an integration test wiring the real components with fx and a local fakeintake, or a hand-off to new-e2e. Finds the components the current diff touches, or asks which feature to test and maps the components it involves, then writes, wires and validates the test. Use when asked to "write a test", "add tests for my change", "test this feature", "cover this end to end", "make this an integration test", or "replace this e2e test with something cheaper". Not for writing or extending new-e2e tests the user already asked for by name (write-e2e), running existing tests (run-e2e), judging an existing suite only (e2e-audit), or Python tests.
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash, Skill, AskUserQuestion
 argument-hint: "[feature or behavior to test — omit to derive it from the current diff]"
 ---
@@ -82,8 +82,8 @@ Run it after adding a test file or `testdata/` files, and commit the `BUILD.baze
 
 ## Step 5 — Validate
 
-1. Run it: `dda inv test --targets=./<package>`. Read the subtest results in the Bazel test log, not only the target status: a test that skips (for example, when a generated file is missing) passes too.
-2. Prove it fails: break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and check `git diff` holds only the test change. A test that still passes was asserting on something else.
+1. Run it: `dda inv test --targets=./<package> --test-args='-test.v'`. Read the subtest results in the Bazel test log, not only the target status. Its path is printed for a failing target; for a passing one, targets with build-tag flavors live under a transitioned configuration that `bazel-testlogs` doesn't point to, so find it with `find "$(bazel info output_path)" -path '*/testlogs/<package>/*/test.log'`: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to iterate on one case.
+2. Prove it fails: save the state of the tree first (`git diff > /tmp/before-break.diff`), since the change under test may have uncommitted edits. Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and check that `git diff` matches the saved one again (`git diff | diff - /tmp/before-break.diff`). A test that still passes was asserting on something else.
 3. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
 ## Output

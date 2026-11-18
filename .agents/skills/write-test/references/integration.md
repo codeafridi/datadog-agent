@@ -73,13 +73,16 @@ When normalizing, mind the platform: a Windows temporary path appears JSON-escap
 
 Use `require.EventuallyWithT` with a timeout of a few seconds and a short interval, and assert inside it, so the failure message shows the last diff.
 
-Don't assert that something doesn't happen by watching a quiet window (`require.Never` for one second): on a slow runner the output may not have been sent yet, and the test passes without checking anything. Make the absence observable instead: add a canary input known to produce one output, wait for that output, then check it is the only one. For example, an env var set to an invalid value raises one known issue; once it reaches fakeintake, no other configuration issue may be in the report.
+Don't assert that something doesn't happen by watching a quiet window (`require.Never` for one second): on a slow runner the output may not have been sent yet, and the test passes without checking anything. Make the absence observable instead, with a signal that the producers you check have completed:
+
+- A canary proves completion only for the producer that emits it, in the same run. Add a canary input that this producer turns into one known output, wait for it, then check it is the only output of that producer. For example, an env var set to an invalid value makes the `datadog.yaml` check raise one known issue in the same run as every other `datadog.yaml` violation; once it reaches fakeintake, no other `datadog.yaml` issue may be in the report.
+- Producers running independently (separate checks, goroutines) each need their own completion signal: a canary of their own, a status or counter they expose, or a synchronous source of what they report. In the example above, the system-probe check runs on its own, so the test asserts its absence on the violations the schema recorded while loading, which the check reports as they are.
 
 When several payloads arrive, pick the latest one explicitly, and break ties in favor of the later arrival.
 
 ## Keep tests independent
 
-Restore every global you change (configurations, override functions, registries, environment variables) with `t.Cleanup`. Don't run these tests with `t.Parallel()` when they replace process-wide state. Check that the test also passes when run alone (`bazel test //<package>:<test target> --test_filter=TestX/<case>`), not only after the other tests of the package.
+Restore every global you change (configurations, override functions, registries, environment variables) with `t.Cleanup`. Don't run these tests with `t.Parallel()` when they replace process-wide state. Check that the test also passes when run alone (`dda inv test --targets=./<package> --test-args='-test.run=TestX/<case>'`), not only after the other tests of the package.
 
 ## Say what's not covered
 
