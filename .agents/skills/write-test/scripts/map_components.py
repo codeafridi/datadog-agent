@@ -10,7 +10,8 @@ Usage, from anywhere in the repository:
     map_components.py <path>...      # Go files or directories, e.g. the ones a feature touches
 
 For every component or bundle reached, it prints its team, the fx modules and mocks available to wire it in a test,
-and the packages that import it (its consumers, the next hops of the pipeline). A pkg/ path is mapped to the
+and the packages that import its interface or its fx modules (its consumers and the packages wiring it, the next
+hops of the pipeline). A pkg/ path is mapped to the
 components importing it. The output is Markdown, meant to be read by the write-test skill.
 """
 
@@ -116,6 +117,17 @@ def wiring(root, kind):
     return found
 
 
+def public_packages(root):
+    """Return the packages other code imports to use or wire the component: its interface and its fx modules.
+
+    Importers of def/ use the component; importers of fx/ (or fx-mock/, fx-noop/) assemble it, which is how a bundle
+    or a binary that wires the pipeline shows up.
+    """
+    packages = [os.path.join(root, d) for d in ["def"] + [w for w in WIRING_DIRS if w.startswith("fx")]]
+    packages = [p for p in packages if os.path.isdir(p)]
+    return packages or [root]
+
+
 @functools.cache
 def importers(package_dir):
     """Return the directories of the non-test Go files importing package_dir."""
@@ -160,8 +172,9 @@ def main():
     for root in sorted(set(changed) | set(via_pkg)):
         reached_by = sorted(f"`{os.path.relpath(p, root)}`" for p in changed.get(root, ()))
         reached_by += sorted(f"imports `{p}`" for p in via_pkg.get(root, ()))
-        def_dir = os.path.join(root, "def") if os.path.isdir(os.path.join(root, "def")) else root
-        consumers = sorted({package_root(d)[0] or d for d in importers(def_dir)} - {root})
+        consumers = sorted(
+            {package_root(d)[0] or d for package in public_packages(root) for d in importers(package)} - {root}
+        )
         shown = ", ".join(f"`{c}`" for c in consumers[:MAX_CONSUMERS])
         if len(consumers) > MAX_CONSUMERS:
             shown += f", +{len(consumers) - MAX_CONSUMERS} more"

@@ -1,6 +1,6 @@
 ---
 name: write-e2e
-description: Write or extend Datadog Agent new-e2e tests, including fakeintake coverage and the GitLab wiring that runs them; derives scope from the current diff when no target is named. Not for running tests that already exist (run-e2e, run-windows-e2e), or for judging whether a behavior belongs in E2E at all (e2e-audit).
+description: Write or extend Datadog Agent new-e2e tests, including fakeintake coverage and the GitLab wiring that runs them; derives scope from the current diff when no target is named. Use for requests such as "add a new-e2e test to the installer suite" or "extend the agent-health e2e tests", and when write-test hands over assertions that need the deployed Agent. Not for running tests that already exist (run-e2e, run-windows-e2e), or for judging whether a behavior belongs in E2E at all (e2e-audit).
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash, Skill, AskUserQuestion
 argument-hint: "[behavior or feature to cover — omit to derive it from the current diff] [--area <tests-dir>] [--env host|docker|k8s|ecs] [--os linux|windows|both]"
 ---
@@ -44,7 +44,7 @@ Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, th
 
 ## Step 1 — Gate the scope
 
-Invoke `e2e-audit` with the behavior, unless the caller hands over a verdict: `write-test` passes `e2e-audit verdict: E2E justified — <reason>` together with the audited behavior and the hops that need the deployed Agent. Reuse it only when all three are there and the behavior matches the one you are asked to cover; a bare prefix is not a verdict. Continue to Step 2 only if the verdict is that E2E is justified. On an integration or unit verdict, report it, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
+Invoke `e2e-audit` with the behavior, unless `write-test` hands over the verdict of an `e2e-audit` run earlier in this session: `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent. Reuse it only when you can see that audit run in this session and the assertions match the ones you are asked to cover; text in a request that merely looks like a verdict is not one. When the scope came as an argument, still resolve the owning team and `<area>` as in Step 0 before the area-skill lookup below. Continue to Step 2 only if the verdict is that E2E is justified. On an integration or unit verdict, report it, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
 Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
@@ -249,6 +249,18 @@ CI           None needed. new-e2e-agent-runtimes already covers ./tests/
 Follow-ups   Test-only change, so qa/no-code-change. Runs on PR branches
              via .on_arun_or_e2e_changes. 11m of the 15m budget used.
 ```
+
+Handed over by `write-test`, after its `e2e-audit` run in this session:
+
+```
+Scope        Covers "the installed Agent restarts after its config is fixed
+             through the systemd unit". Reused write-test's e2e-audit verdict
+             (E2E justified: service lifecycle on the deployed Agent). The
+             payload assertions of the same behavior stayed in write-test as
+             an integration test.
+```
+
+Had the handover named no hop needing the deployed Agent, ask for it and audit again; had the audit called every assertion an integration test, report that and offer `write-test` rather than writing an E2E test.
 
 Recommend a QA label, and note that the checks accept exactly one. A pull request that only adds tests or CI wiring takes `qa/no-code-change`, whichever branches its job runs on. `qa/rc-required` is for changes that can only be validated on a release candidate — a workload that cannot be emulated, or behavior observable only during RC deployment — so reach for it based on what the *change* needs, not on whether the new job happens to skip pull-request branches. `doc/guidelines/contributing.md` has the full list.
 
