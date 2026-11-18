@@ -233,7 +233,8 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 func (c *WorkloadMetaCollector) tagEntity(ev workloadmeta.Event) []*types.TagInfo {
 	c.store.startTracking()
 	tagInfos := c.handleSet(ev)
-	c.dependencies.replace(ev, c.store.stopTracking())
+	dependencies := c.store.stopTracking()
+	c.dependencies.replace(ev, dependencies)
 	return tagInfos
 }
 
