@@ -30,13 +30,13 @@ import (
 
 func TestDependencyIndex(t *testing.T) {
 	pod := &workloadmeta.KubernetesPod{EntityID: workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesPod, ID: "pod"}}
-	workload := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueWorkload, ID: "default/job"}
-	flavor := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueResourceFlavor, ID: "a100"}
+	workload := entityDependency(workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueWorkload, ID: "default/job"})
+	flavor := entityDependency(workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueResourceFlavor, ID: "a100"})
 
 	d := newDependencyIndex()
 
 	complete := workloadmeta.Event{Type: workloadmeta.EventTypeSet, Entity: pod, IsComplete: true}
-	d.replace(complete, map[workloadmeta.EntityID]struct{}{workload: {}, flavor: {}})
+	d.replace(complete, map[dependency]struct{}{workload: {}, flavor: {}})
 	assert.ElementsMatch(t, []workloadmeta.EntityID{pod.EntityID}, d.readersOf(workload))
 	assert.ElementsMatch(t, []workloadmeta.EntityID{pod.EntityID}, d.readersOf(flavor))
 	ev, ok := d.lastEvent(pod.EntityID)
@@ -44,7 +44,7 @@ func TestDependencyIndex(t *testing.T) {
 	assert.Equal(t, complete, ev)
 
 	incomplete := workloadmeta.Event{Type: workloadmeta.EventTypeSet, Entity: pod}
-	d.replace(incomplete, map[workloadmeta.EntityID]struct{}{flavor: {}})
+	d.replace(incomplete, map[dependency]struct{}{flavor: {}})
 	assert.Empty(t, d.readersOf(workload))
 	assert.ElementsMatch(t, []workloadmeta.EntityID{pod.EntityID}, d.readersOf(flavor))
 	ev, _ = d.lastEvent(pod.EntityID)
@@ -56,6 +56,28 @@ func TestDependencyIndex(t *testing.T) {
 	assert.Empty(t, d.tagged)
 	_, ok = d.lastEvent(pod.EntityID)
 	assert.False(t, ok)
+}
+
+func TestDependencyIndexChangedIncludesPreviousKeys(t *testing.T) {
+	autoscaler := &workloadmeta.KubernetesAutoscaler{EntityID: workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesAutoscaler, ID: "default/my-hpa"}}
+	autoscalerID := entityDependency(autoscaler.EntityID)
+	target := func(key string) dependency { return keyDependency(workloadmeta.KindKubernetesAutoscaler, key) }
+	d := newDependencyIndex()
+
+	set := workloadmeta.Event{Type: workloadmeta.EventTypeSet, Entity: autoscaler}
+	assert.ElementsMatch(t, []dependency{autoscalerID, target("app-a")}, d.changed(set, []string{"app-a"}))
+
+	// The autoscaler targets another workload: readers of both are affected.
+	assert.ElementsMatch(t, []dependency{autoscalerID, target("app-a"), target("app-b")}, d.changed(set, []string{"app-b"}))
+
+	// The entity lost its key: readers of the old one are still affected.
+	assert.ElementsMatch(t, []dependency{autoscalerID, target("app-b")}, d.changed(set, nil))
+	assert.Empty(t, d.keys)
+
+	d.changed(set, []string{"app-a"})
+	unset := workloadmeta.Event{Type: workloadmeta.EventTypeUnset, Entity: autoscaler}
+	assert.ElementsMatch(t, []dependency{autoscalerID, target("app-a")}, d.changed(unset, nil))
+	assert.Empty(t, d.keys)
 }
 
 func TestTrackingStoreRecordsLookupsOnlyWhileTracking(t *testing.T) {
@@ -70,9 +92,9 @@ func TestTrackingStoreRecordsLookupsOnlyWhileTracking(t *testing.T) {
 	_, _ = s.GetKubernetesKueueResourceFlavor("a100")
 	reads := s.stopTracking()
 
-	assert.Equal(t, map[workloadmeta.EntityID]struct{}{
-		{Kind: workloadmeta.KindKubernetesKueueWorkload, ID: "default/job"}: {},
-		{Kind: workloadmeta.KindKubernetesKueueResourceFlavor, ID: "a100"}:  {},
+	assert.Equal(t, map[dependency]struct{}{
+		entityDependency(workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueWorkload, ID: "default/job"}): {},
+		entityDependency(workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueResourceFlavor, ID: "a100"}):  {},
 	}, reads)
 
 	_, _ = s.GetKubernetesKueueWorkload("default/untracked")
@@ -147,7 +169,7 @@ func TestDeletedPodIsNotRetagged(t *testing.T) {
 
 	h.store.Unset(pod)
 	h.process(unsetEvent(pod))
-	assert.Empty(t, h.collector.dependencies.readersOf(workload.EntityID))
+	assert.Empty(t, h.collector.dependencies.readersOf(entityDependency(workload.EntityID)))
 
 	got := h.add(newKueueWorkload("job-a", "h100"))
 	assert.Nil(t, tagInfoFor(got, podTaggerID("pod-a")))
@@ -228,6 +250,115 @@ func TestPartialUnsetKeepsReaderStateOnDependencyChange(t *testing.T) {
 			assert.Contains(t, kaiTags(podTags), "kai_pod_group:pg")
 		})
 	}
+}
+
+func TestPodTaggedBeforeItsAutoscalerInTheSameBundle(t *testing.T) {
+	h := newDependencyTestHarness(t)
+	pod := newTestAutoscaledPod("pod-a", "my-ns", "app-a")
+	hpa := newTestAutoscaler(workloadmeta.AutoscalerKindHPA, "my-ns", "my-hpa", workloadmeta.AutoscalerTargetDeployment, "app-a")
+	h.store.Set(pod)
+
+	// The pod is tagged first, and isn't re-tagged later in the bundle, so it
+	// must already see the autoscaler.
+	got := h.process(setEvent(pod), setEvent(hpa))
+
+	podTags := tagInfoFor(got, podTaggerID("pod-a"))
+	require.NotNil(t, podTags)
+	assert.Contains(t, podTags.LowCardTags, "kube_autoscaler_kind:horizontalpodautoscaler")
+}
+
+// The autoscaler re-tag must use the same pod snapshot as the dependency
+// re-tag, and not re-tag the pod a second time from the store.
+func TestAutoscalerRetagUsesReaderSnapshot(t *testing.T) {
+	h := newDependencyTestHarness(t)
+	podID := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesPod, ID: "pod-a"}
+	owners := []workloadmeta.KubernetesPodOwner{{Kind: kubernetes.DeploymentKind, Name: "app-a"}}
+	withAnnotation := &workloadmeta.KubernetesPod{
+		EntityID: podID,
+		EntityMeta: workloadmeta.EntityMeta{
+			Name:        "pod-a",
+			Namespace:   "default",
+			Annotations: map[string]string{kubernetes.KAIPodGroupAnnotationKey: "pg"},
+		},
+		Owners: owners,
+	}
+	withoutAnnotation := &workloadmeta.KubernetesPod{
+		EntityID:   podID,
+		EntityMeta: workloadmeta.EntityMeta{Name: "pod-a", Namespace: "default"},
+		Owners:     owners,
+	}
+	h.store.Notify([]workloadmeta.CollectorEvent{
+		{Type: workloadmeta.EventTypeSet, Source: workloadmeta.SourceNodeOrchestrator, Entity: withAnnotation},
+		{Type: workloadmeta.EventTypeSet, Source: workloadmeta.SourceClusterOrchestrator, Entity: withoutAnnotation},
+	})
+	beforeRemoval, err := h.store.GetKubernetesPod(podID.ID)
+	require.NoError(t, err)
+	h.add(newKAIPodGroup("pg", "queue-a"))
+	h.process(setEvent(beforeRemoval))
+
+	// The source with the annotation is removed; the tagger gets the pod as it
+	// was before the removal.
+	h.store.Notify([]workloadmeta.CollectorEvent{
+		{Type: workloadmeta.EventTypeUnset, Source: workloadmeta.SourceNodeOrchestrator, Entity: withAnnotation},
+	})
+	h.process(setEvent(beforeRemoval))
+
+	updated := newKAIPodGroup("pg", "queue-b")
+	h.store.Set(updated)
+	hpa := newTestAutoscaler(workloadmeta.AutoscalerKindHPA, "default", "my-hpa", workloadmeta.AutoscalerTargetDeployment, "app-a")
+	got := h.process(setEvent(updated), setEvent(hpa))
+
+	count := 0
+	for _, tagInfo := range got {
+		if tagInfo.EntityID == podTaggerID("pod-a") {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "the pod is re-tagged once")
+
+	podTags := tagInfoFor(got, podTaggerID("pod-a"))
+	require.NotNil(t, podTags)
+	assert.Contains(t, kaiTags(podTags), "kai_queue:queue-b")
+	assert.Contains(t, podTags.LowCardTags, "kube_autoscaler_kind:horizontalpodautoscaler")
+}
+
+// After a partial unset the store's pod can lack the owner that the pod's
+// current tags were computed from. Removing its autoscaler must still re-tag
+// it, including when the pod reads nothing else, like Kueue or KAI entities.
+func TestAutoscalerRemovalRetagsPodAfterPartialUnset(t *testing.T) {
+	h := newDependencyTestHarness(t)
+	podID := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesPod, ID: "pod-a"}
+	// The owner only comes from the kubelet.
+	fromKubelet := &workloadmeta.KubernetesPod{
+		EntityID:   podID,
+		EntityMeta: workloadmeta.EntityMeta{Name: "pod-a", Namespace: "default"},
+		Owners:     []workloadmeta.KubernetesPodOwner{{Kind: kubernetes.DeploymentKind, Name: "app-a"}},
+	}
+	fromCluster := &workloadmeta.KubernetesPod{
+		EntityID:   podID,
+		EntityMeta: workloadmeta.EntityMeta{Name: "pod-a", Namespace: "default"},
+	}
+	hpa := newTestAutoscaler(workloadmeta.AutoscalerKindHPA, "default", "my-hpa", workloadmeta.AutoscalerTargetDeployment, "app-a")
+	h.store.Notify([]workloadmeta.CollectorEvent{
+		{Type: workloadmeta.EventTypeSet, Source: workloadmeta.SourceNodeOrchestrator, Entity: fromKubelet},
+		{Type: workloadmeta.EventTypeSet, Source: workloadmeta.SourceClusterOrchestrator, Entity: fromCluster},
+	})
+	beforeRemoval, err := h.store.GetKubernetesPod(podID.ID)
+	require.NoError(t, err)
+	got := h.process(setEvent(beforeRemoval), setEvent(hpa))
+	require.Contains(t, tagInfoFor(got, podTaggerID("pod-a")).LowCardTags, "kube_autoscaler_kind:horizontalpodautoscaler")
+
+	// The kubelet removes the pod first: the store's pod loses its owner, and
+	// the tagger gets the pod as it was before the removal.
+	h.store.Notify([]workloadmeta.CollectorEvent{
+		{Type: workloadmeta.EventTypeUnset, Source: workloadmeta.SourceNodeOrchestrator, Entity: fromKubelet},
+	})
+	h.process(setEvent(beforeRemoval))
+
+	got = h.process(unsetEvent(hpa))
+	podTags := tagInfoFor(got, podTaggerID("pod-a"))
+	require.NotNil(t, podTags, "pod-a was not re-tagged after its autoscaler was removed")
+	assert.NotContains(t, podTags.LowCardTags, "kube_autoscaler_kind:horizontalpodautoscaler")
 }
 
 type dependencyTestHarness struct {

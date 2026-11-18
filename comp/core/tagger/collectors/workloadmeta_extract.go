@@ -139,9 +139,11 @@ var (
 func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle) {
 	var tagInfos []*types.TagInfo
 
-	// Autoscaler targets with changes in this bundle
-	autoscalerTargets := make(map[workloadmeta.AutoscalerTarget]struct{})
+	// Pods read the autoscaler index, so it is updated for the whole bundle
+	// before any pod of the bundle is tagged.
+	autoscalerTargets := c.updateAutoscalers(evBundle.Events)
 	tagged := make(map[workloadmeta.EntityID]struct{}, len(evBundle.Events))
+	var changed []dependency
 
 	for _, ev := range evBundle.Events {
 		entityID := ev.Entity.GetID()
@@ -152,31 +154,16 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 			continue
 		}
 
+		changed = append(changed, c.dependencies.changed(ev, dependencyKeys(ev.Entity))...)
+
 		if entityID.Kind == workloadmeta.KindKubernetesKAIPodGroup {
 			// PodGroups have no tags of their own
 			continue
 		}
 
 		if entityID.Kind == workloadmeta.KindKubernetesAutoscaler {
-			// Only the Cluster Agent has autoscaler entities, collected by
-			// the kubeapiserver collector. Node agents get the autoscaler
-			// kinds in the pod entities instead, from the kubemetadata
-			// collector, so this only runs in the Cluster Agent.
-			//
-			// Autoscalers don't have tagger entities of their own. Their tags
-			// are added to the pods of the workloads they target and to the
-			// autoscaled workload entities used by KSM, so the pods and
-			// entities of the previous and the new target need to be updated.
-			autoscaler := ev.Entity.(*workloadmeta.KubernetesAutoscaler)
-			// Set events don't carry the previous target, so it comes from
-			// the index
-			if previous, found := c.autoscalers[entityID.ID]; found {
-				autoscalerTargets[previous] = struct{}{}
-			}
-			if ev.Type == workloadmeta.EventTypeSet {
-				autoscalerTargets[autoscaler.Target()] = struct{}{}
-			}
-			c.updateAutoscalerIndex(ev.Type, autoscaler)
+			// Autoscalers don't have tagger entities of their own. They are
+			// indexed by updateAutoscalers.
 			continue
 		}
 
@@ -203,8 +190,8 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 	// source's data. Readers tagged above are skipped because workloadmeta
 	// updates its store with the whole bundle before sending it, so they
 	// already read the new state of their dependencies.
-	for _, ev := range evBundle.Events {
-		for _, readerID := range c.dependencies.readersOf(ev.Entity.GetID()) {
+	for _, dep := range changed {
+		for _, readerID := range c.dependencies.readersOf(dep) {
 			if _, ok := tagged[readerID]; ok {
 				continue
 			}
@@ -217,7 +204,6 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 	}
 
 	if len(autoscalerTargets) > 0 {
-		tagInfos = append(tagInfos, c.retagAutoscalerDependentPods(autoscalerTargets)...)
 		tagInfos = append(tagInfos, c.handleAutoscaledWorkloads(autoscalerTargets)...)
 	}
 
@@ -300,6 +286,17 @@ func (c *WorkloadMetaCollector) handleSet(ev workloadmeta.Event) []*types.TagInf
 	tagInfos = append(tagInfos, c.handleDeleteChildren(source, unseen)...)
 
 	return tagInfos
+}
+
+// dependencyKeys returns the keys that lookups by reference find the entity
+// by, recorded by readers with trackKey.
+func dependencyKeys(entity workloadmeta.Entity) []string {
+	switch e := entity.(type) {
+	case *workloadmeta.KubernetesAutoscaler:
+		// Pods read the autoscalers of their workload
+		return []string{autoscalerTargetKey(e.Target())}
+	}
+	return nil
 }
 
 func (c *WorkloadMetaCollector) handleContainer(ev workloadmeta.Event) []*types.TagInfo {
@@ -1616,25 +1613,6 @@ func kueueWorkloadNameForPod(pod *workloadmeta.KubernetesPod) string {
 	return workloadName
 }
 
-// retagPods recomputes the tags of the pods for which affected returns true.
-// Pod tags are computed from the scheduler entities in the store at that time,
-// and setting, changing or removing those entities later does not generate a
-// new event for the pod.
-func (c *WorkloadMetaCollector) retagPods(affected func(*workloadmeta.KubernetesPod) bool) []*types.TagInfo {
-	var tagInfos []*types.TagInfo
-	for _, pod := range c.store.ListKubernetesPods() {
-		if !affected(pod) {
-			continue
-		}
-		tagInfos = append(tagInfos, c.handleKubePod(workloadmeta.Event{
-			Type:       workloadmeta.EventTypeSet,
-			Entity:     pod,
-			IsComplete: c.entityCompleteness[pod.EntityID],
-		})...)
-	}
-	return tagInfos
-}
-
 func (c *WorkloadMetaCollector) getKueueWorkloadForPod(pod *workloadmeta.KubernetesPod) *workloadmeta.KubernetesKueueWorkload {
 	workloadName := kueueWorkloadNameForPod(pod)
 	if workloadName == "" {
@@ -1689,6 +1667,39 @@ func (c *WorkloadMetaCollector) getKAIPodGroupForPod(pod *workloadmeta.Kubernete
 	return podGroup
 }
 
+// updateAutoscalers updates the autoscaler index with the autoscaler events of
+// the bundle, and returns the previous and new targets of those autoscalers.
+//
+// Only the Cluster Agent has autoscaler entities, collected by the
+// kubeapiserver collector. Node agents get the autoscaler kinds in the pod
+// entities instead, from the kubemetadata collector.
+func (c *WorkloadMetaCollector) updateAutoscalers(events []workloadmeta.Event) map[workloadmeta.AutoscalerTarget]struct{} {
+	var targets map[workloadmeta.AutoscalerTarget]struct{}
+	for _, ev := range events {
+		autoscaler, ok := ev.Entity.(*workloadmeta.KubernetesAutoscaler)
+		if !ok {
+			continue
+		}
+		if targets == nil {
+			targets = make(map[workloadmeta.AutoscalerTarget]struct{})
+		}
+		// Set events don't carry the previous target, so it comes from the
+		// index
+		if previous, found := c.autoscalers[autoscaler.EntityID.ID]; found {
+			targets[previous] = struct{}{}
+		}
+		if ev.Type == workloadmeta.EventTypeSet {
+			targets[autoscaler.Target()] = struct{}{}
+		}
+		c.updateAutoscalerIndex(ev.Type, autoscaler)
+	}
+	return targets
+}
+
+func autoscalerTargetKey(target workloadmeta.AutoscalerTarget) string {
+	return string(target.Kind) + "/" + target.Namespace + "/" + target.Name
+}
+
 func (c *WorkloadMetaCollector) updateAutoscalerIndex(eventType workloadmeta.EventType, autoscaler *workloadmeta.KubernetesAutoscaler) {
 	id := autoscaler.EntityID.ID
 
@@ -1725,23 +1736,10 @@ func (c *WorkloadMetaCollector) extractTagsFromPodAutoscalers(pod *workloadmeta.
 	}
 
 	// The autoscalersByTarget index is only built in the DCA
+	c.store.trackKey(workloadmeta.KindKubernetesAutoscaler, autoscalerTargetKey(target))
 	for _, kind := range c.autoscalersByTarget[target] {
 		tagList.AddLow(tags.KubeAutoscalerKind, string(kind))
 	}
-}
-
-// retagAutoscalerDependentPods recomputes the tags of the pods of the given
-// autoscaler targets. Pod tags depend on the autoscalers, but autoscaler
-// changes don't generate pod events, so the pods need to be re-tagged here.
-func (c *WorkloadMetaCollector) retagAutoscalerDependentPods(targets map[workloadmeta.AutoscalerTarget]struct{}) []*types.TagInfo {
-	return c.retagPods(func(pod *workloadmeta.KubernetesPod) bool {
-		target, ok := pod.AutoscalerTarget()
-		if !ok {
-			return false
-		}
-		_, affected := targets[target]
-		return affected
-	})
 }
 
 func (c *WorkloadMetaCollector) handleAutoscaledWorkloads(targets map[workloadmeta.AutoscalerTarget]struct{}) []*types.TagInfo {
