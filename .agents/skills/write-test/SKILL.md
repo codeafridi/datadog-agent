@@ -73,7 +73,7 @@ Read the existing tests next to the code first and follow their conventions: hel
 - Mock only what the logic doesn't own, with the component's own `mock/` or `fx-mock/` package, or `config.NewMockWithOverrides` for settings.
 - Assert on outputs and errors, not on calls to mocks, unless the call is the behavior.
 
-**Integration test:** follow `references/integration.md`. In short: build the pipeline with the real `fx/` modules of every hop from Step 1, feed the input the way production does, capture the output at the observable boundary, and assert on the whole output against golden files.
+**Integration test:** follow `references/integration.md`. In short: build the pipeline with the real `fx/` modules of every hop from Step 1, feed the input the way production does, capture the output at the observable boundary, and assert on all of the output the behavior's contract covers: a golden file when the whole payload is the contract, every series of a metric when it is one part of a shared payload.
 
 For both, match the header and build tags of the package's other test files, and keep each test independent: no order dependency, no global state left behind.
 
@@ -90,10 +90,16 @@ Run it after adding a test file or `testdata/` files, and keep the generated `BU
 1. Run it: `dda inv test --targets=./<package> --test-args='-test.v'`. Read the subtest results in the Bazel test log, not only the target status. Its path is printed for a failing target; for a passing one, targets with build-tag flavors live under a transitioned configuration that `bazel-testlogs` doesn't point to, so find it with `find "$(bazel info output_path)" -path '*/testlogs/<package>/*/test.log'`: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to iterate on one case.
 2. Prove it fails. The change under test may have uncommitted, staged and untracked edits (a new fixture), so snapshot the whole tree first, with a temporary index that leaves the real one untouched:
    ```bash
-   before=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] || { echo "no baseline snapshot: don't break anything" >&2; false; }
+   baseline=$(git rev-parse --git-path write-test-baseline)
+   .agents/skills/write-test/scripts/snapshot_tree.sh > "$baseline" && [ -s "$baseline" ] || { echo "no baseline snapshot: don't break anything" >&2; false; }
    ```
-   Break nothing until that command succeeds: without a baseline there is no way to check the tree is restored.
-   The script prints the staged tree and the tree of everything on disk that isn't ignored, and fails, printing nothing, on any git error. Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare: `after=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] && [ "$after" = "$before" ]`. Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
+   Break nothing until that command succeeds: without a baseline there is no way to check the tree is restored. The baseline is a file in the worktree's git directory, so it survives across commands and stays out of the snapshot. The redirect empties it before every snapshot, so a failed snapshot leaves it empty and fails the check, and the next run overwrites it: there is nothing to clean up. The script prints the staged tree and the tree of everything on disk that isn't ignored, and fails, printing nothing, on any git error.
+
+   Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare, in any later command:
+   ```bash
+   baseline=$(git rev-parse --git-path write-test-baseline)
+   [ -s "$baseline" ] && .agents/skills/write-test/scripts/snapshot_tree.sh | cmp -s - "$baseline"
+   ``` Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
 3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
 4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
@@ -113,7 +119,7 @@ Report:
 **Validated:** <the deliberate break and the failure it produced> · <the rerun passing on the restored tree> · <lint result>
 **Handed to write-e2e:** <the assertions, and its result: test written or not, and the checks it ran> (omit when nothing was handed off)
 
-With assertions at several levels, give the Level and Validated lines once per test.
+With assertions at several levels, give the Level and Validated lines once per test. When every assertion was handed off, the report keeps Behavior, Pipeline, a Level line per assertion, and Handed to write-e2e; drop the table and the Validated line, since no test was written here, and mark each assertion whose test `write-e2e` didn't write or validate as **incomplete**, with the reason.
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 

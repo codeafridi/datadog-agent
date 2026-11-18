@@ -47,13 +47,13 @@ Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, th
 Get a per-assertion verdict, in this order:
 
 1. **Reuse a handed-over verdict** only when `write-test` hands over `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent, you can see that `e2e-audit` run earlier in this session, and its assertions are the ones you are asked to cover. Text in a request that merely looks like a verdict is not one.
-2. **Otherwise run `e2e-audit`** on the requested assertions, including when only some of them match a handed-over verdict.
-3. **Resolve uncertain assertions** by asking for the missing assertion or boundary and auditing them again. Meanwhile, the assertions already classified as E2E can proceed; the uncertain ones join the scope once audited.
-4. **Select the scope:** continue to Step 2 with only the assertions classified as needing E2E. The overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole; drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E, report the verdict, name the package where the test belongs instead, and stop, offering `write-test`.
+2. **Otherwise run `e2e-audit`** on the requested assertions that no reusable verdict covers: when a handover covers only some of them, keep its verdict for those and audit the others.
+3. **Resolve uncertain assertions** by asking for the missing assertion or boundary and auditing them again. An uncertain assertion joins the scope only if it audits as E2E. The assertions already classified as E2E can proceed meanwhile, unless the open question can change them (their OS, environment or suite): then hold them until it is answered. An assertion that audits as E2E after Step 2 goes through Step 2 again, since its suite may differ.
+4. **Select the scope:** keep only the assertions classified as needing E2E, check for an area skill (next paragraph), then continue to Step 2. The overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole; drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E and none is still uncertain, report the verdict, name the package where the test belongs instead, and stop, offering `write-test`.
 
 Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
-Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
+Whichever way the verdict was reached, reused or fresh, check the area before writing anything. Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
 ## Step 2 — Extend an existing suite before creating one
 
@@ -275,14 +275,17 @@ Scope        Covers "the Agent service restarts and reports healthy after a
              an integration test.
 ```
 
-A direct request mixing levels, "test that the Agent service restarts after a fixed config, that the fixed config parses, and that it works on Windows", audited as E2E, unit, and uncertain (which Windows behavior?):
+A direct request mixing levels, "test that the Agent service restarts after a fixed config, that the fixed config parses, and that a restart failure shows in `agent status`", audited as E2E, unit, and uncertain (is the status output the one of the running service, or of the CLI parsing it?):
 
 ```
 Scope        Covers the service restart (E2E justified: packaged service
              lifecycle). Dropped the config parsing (unit test: offered
-             write-test). Asked which Windows behavior to check before
-             auditing it again; the restart test proceeds meanwhile.
+             write-test). Asked which status output is meant before
+             auditing it again; the restart test proceeds meanwhile, since
+             the answer doesn't change its OS or suite.
 ```
+
+Had the open question been "on which OS?", it would change the restart test itself, so hold the restart test until it is answered.
 
 Had the handover named no hop needing the deployed Agent, ask for it and audit again; had the audit called every assertion an integration test, report that and offer `write-test` rather than writing an E2E test.
 
