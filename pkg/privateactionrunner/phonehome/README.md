@@ -16,7 +16,7 @@ state; they do not cause core to launch or stop a monolithic runner.
 ## Configuration
 
 - Core: PAR enabled, split mode enabled, local RC enabled.
-- Non-containerized, non-FIPS Linux core Agent; matching core/executor config, API key,
+- Non-containerized Linux core Agent; matching core/executor config, API key,
   site, proxy, secrets and user. RC-specific credentials/unsupported endpoint overrides
   and extra PAR config files are not supported. Live credential/endpoint changes need
   a coordinated restart.
