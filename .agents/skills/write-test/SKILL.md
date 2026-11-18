@@ -24,10 +24,10 @@ With an argument, treat it as the feature to test. Otherwise derive the scope fr
 
 ```bash
 git status --short
-git diff --stat $(git merge-base HEAD origin/main)
+python3 -I .agents/skills/write-test/scripts/map_components.py
 ```
 
-When the diff has no Go change, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
+The script maps every Go file changed against `origin/main`, untracked new files included, which `git diff` alone would miss. When it finds no Go file, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
 
 ## Step 1 — Map the components involved
 
@@ -92,7 +92,7 @@ Run it after adding a test file or `testdata/` files, and commit the `BUILD.baze
    ```bash
    before=$(.agents/skills/write-test/scripts/snapshot_tree.sh) || echo "snapshot failed: stop"
    ```
-   The script prints the tree ID of everything that isn't ignored, and fails, printing nothing, on any git error. Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare: `after=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] && [ "$after" = "$before" ]`. Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
+   The script prints the staged tree and the tree of everything on disk that isn't ignored, and fails, printing nothing, on any git error. Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare: `after=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] && [ "$after" = "$before" ]`. Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
 3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
 4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
@@ -111,10 +111,12 @@ Report:
 
 **Validated:** <the deliberate break and the failure it produced> · <the rerun passing on the restored tree> · <lint result>
 **Handed to write-e2e:** <the assertions, and its result: test written or not, and the checks it ran> (omit when nothing was handed off)
+
+With assertions at several levels, give the Level and Validated lines once per test.
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 
-The skill succeeded when every assertion is either tested here or reported as handed off with the result of `write-e2e`, the test failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. For an integration test, the output is also asserted as a whole (a golden file, or every field of the payload); for a unit test, every case of the table asserts on an output or an error.
+The skill succeeded when every assertion is either tested here or reported as handed off with the result of `write-e2e`, and, for each test written here: it failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. For an integration test, the output is also asserted as a whole (a golden file, or every field of the payload); for a unit test, every case of the table asserts on an output or an error.
 
 ## Example
 

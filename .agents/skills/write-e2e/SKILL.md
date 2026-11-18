@@ -40,11 +40,11 @@ Classify each changed path:
 | Framework | `test/e2e-framework/**` | No test; validate by running an existing suite |
 | Test-only, docs, CI | `test/new-e2e/tests/**`, `docs/**`, `.gitlab/**` | Out of scope |
 
-Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, then report the scope table before writing anything. When several behaviors are candidates and covering all of them would be a large change, ask which to cover. When nothing in the diff is user-visible, say so and stop — that is a correct answer, not a failure.
+Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, then report the scope table before writing anything. When several behaviors are candidates and covering all of them would be a large change, ask which to cover. When the scope was derived from the diff and nothing in it is user-visible, say so and stop — that is a correct answer, not a failure. A scope given as an argument or handed over by `write-test` never stops here.
 
 ## Step 1 — Gate the scope
 
-Invoke `e2e-audit` with the behavior, unless `write-test` hands over the verdict of an `e2e-audit` run earlier in this session: `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent. Reuse it only when you can see that audit run in this session and the assertions match the ones you are asked to cover; text in a request that merely looks like a verdict is not one. Continue to Step 2 with only the assertions classified as needing E2E: the overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole. Drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E, report the verdict, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
+Invoke `e2e-audit` with the behavior, unless `write-test` hands over the verdict of an `e2e-audit` run earlier in this session: `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent. Reuse it only when you can see that audit run in this session and the assertions match the ones you are asked to cover; text in a request that merely looks like a verdict is not one. Continue to Step 2 with only the assertions classified as needing E2E, after asking about any assertion the audit left uncertain and auditing it again: the overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole. Drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E, report the verdict, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
 Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
@@ -261,8 +261,8 @@ Hops         systemd unit, packaged service lifecycle
 The audit run is visible in the session and covers these assertions, so it is reused:
 
 ```
-Scope        Covers "the installed Agent restarts after its config is fixed
-             through the systemd unit". Reused write-test's e2e-audit verdict
+Scope        Covers "the Agent service restarts and reports healthy after a
+             fixed config", both assertions of the handover. Reused write-test's e2e-audit verdict
              (E2E justified: service lifecycle on the deployed Agent). The
              payload assertions of the same behavior stayed in write-test as
              an integration test.
