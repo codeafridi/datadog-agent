@@ -8,6 +8,7 @@
 Usage, from anywhere in the repository:
     map_components.py                # the Go files changed against the merge base with origin/main
     map_components.py <path>...      # Go files or directories, e.g. the ones a feature touches
+    map_components.py --all ...      # list every consumer instead of the first ones
 
 For every component or bundle reached, it prints its team, the fx modules and mocks available to wire it in a test,
 and the packages that import its interface or its fx modules (its consumers and the packages wiring it, the next
@@ -142,8 +143,11 @@ def importers(package_dir):
 def main():
     # paths are matched against repository-relative prefixes such as comp/: resolve the arguments from where they were
     # typed, then work from the repository root
+    args = sys.argv[1:]
+    show_all = "--all" in args
+    args = [a for a in args if a != "--all"]
     root = git("rev-parse", "--show-toplevel").strip()
-    paths = [os.path.relpath(os.path.abspath(p), root) for p in sys.argv[1:]]
+    paths = [os.path.relpath(os.path.abspath(p), root) for p in args]
     os.chdir(root)
     files = expand(paths) if paths else changed_go_files()
     if not files:
@@ -175,9 +179,10 @@ def main():
         consumers = sorted(
             {package_root(d)[0] or d for package in public_packages(root) for d in importers(package)} - {root}
         )
-        shown = ", ".join(f"`{c}`" for c in consumers[:MAX_CONSUMERS])
-        if len(consumers) > MAX_CONSUMERS:
-            shown += f", +{len(consumers) - MAX_CONSUMERS} more"
+        listed = consumers if show_all else consumers[:MAX_CONSUMERS]
+        shown = ", ".join(f"`{c}`" for c in listed)
+        if len(consumers) > len(listed):
+            shown += f", +{len(consumers) - len(listed)} more (--all lists them)"
         print(
             f"| `{root}` | {kinds[root]} | {team(root)} | {', '.join(reached_by)} "
             f"| {', '.join(wiring(root, kinds[root])) or '-'} | {shown or '-'} |"

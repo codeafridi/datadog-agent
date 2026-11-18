@@ -40,7 +40,7 @@ List the components the behavior flows through, from where its input enters to w
    ```bash
    python3 -I .agents/skills/write-test/scripts/map_components.py [<path>...]
    ```
-   Without arguments it maps the Go files changed against `origin/main`. For each component or bundle reached, it prints the team, the directories that can build it in a test (`fx/`, `impl/`, `fx-mock/`, `mock/`, `fx-noop/`, `noop-impl/`, or `Bundle()`), and its consumers. A `pkg/` package is mapped to the components importing it; when none imports it directly, pass its importers to the script to follow the chain.
+   Without arguments it maps the Go files changed against `origin/main`. For each component or bundle reached, it prints the team, the directories that can build it in a test (`fx/`, `impl/`, `fx-mock/`, `mock/`, `fx-noop/`, `noop-impl/`, or `Bundle()`), and its consumers. A `pkg/` package is mapped to the components importing it; when none imports it directly, pass its importers to the script to follow the chain. The consumers column lists the first 8 alphabetically; pass `--all` when you need them all, for example to find the bundle that wires a widely used component.
 3. **Follow the pipeline.** Read the `Requires` struct of each changed component's implementation (`impl/*.go`) for its upstream dependencies, and the consumers column for downstream ones. Stop at the boundary where the behavior becomes observable: a forwarder sending to intake, a status provider, a diagnose function, a file written. Read the code along the way rather than assuming the data path from names.
 4. **Report the pipeline** before choosing a level, as a short chain with each hop's component and what it contributes, for example:
 
@@ -59,7 +59,7 @@ The audit classifies each assertion, and the assertions of one behavior can land
 - **Unit assertions:** continue with them.
 - **Uncertain:** ask for the missing assertion or boundary the audit named, and audit again.
 
-Stop only when every assertion was handed off; otherwise the lower-level ones stay in scope here.
+Wait for `write-e2e` to finish and keep its result for the report: whether it wrote the test, and which of its checks ran. Stop after that when every assertion was handed off; otherwise the lower-level ones stay in scope here.
 
 A behavior often needs both: unit tests for the logic of the changed component, and one integration test proving the pipeline still carries it end to end. That pipeline test is the one most changes are missing — unit tests on each piece don't catch two pieces disagreeing (a schema rejecting what the loader produces, a payload field the forwarder drops). Propose it whenever the pipeline spans more than one component, even if the user asked for a unit test.
 
@@ -90,10 +90,9 @@ Run it after adding a test file or `testdata/` files, and commit the `BUILD.baze
 1. Run it: `dda inv test --targets=./<package> --test-args='-test.v'`. Read the subtest results in the Bazel test log, not only the target status. Its path is printed for a failing target; for a passing one, targets with build-tag flavors live under a transitioned configuration that `bazel-testlogs` doesn't point to, so find it with `find "$(bazel info output_path)" -path '*/testlogs/<package>/*/test.log'`: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to iterate on one case.
 2. Prove it fails. The change under test may have uncommitted, staged and untracked edits (a new fixture), so snapshot the whole tree first, with a temporary index that leaves the real one untouched:
    ```bash
-   snapshot() { local idx; idx=$(mktemp); cp "$(git rev-parse --git-path index)" "$idx"; GIT_INDEX_FILE=$idx git add -A; GIT_INDEX_FILE=$idx git write-tree; rm -f "$idx"; }
-   before=$(snapshot)
+   before=$(.agents/skills/write-test/scripts/snapshot_tree.sh) || echo "snapshot failed: stop"
    ```
-   Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and check `[ "$(snapshot)" = "$before" ]`. A test that still passes on the break was asserting on something else.
+   The script prints the tree ID of everything that isn't ignored, and fails, printing nothing, on any git error. Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare: `after=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] && [ "$after" = "$before" ]`. Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
 3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
 4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
@@ -111,10 +110,11 @@ Report:
 | `TestX/<case>` | `comp/...` | <components wired for real> | <dependency>: <outside the boundary because…> |
 
 **Validated:** <the deliberate break and the failure it produced> · <the rerun passing on the restored tree> · <lint result>
+**Handed to write-e2e:** <the assertions, and its result: test written or not, and the checks it ran> (omit when nothing was handed off)
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 
-The skill succeeded when the test failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. For an integration test, the output is also asserted as a whole (a golden file, or every field of the payload); for a unit test, every case of the table asserts on an output or an error.
+The skill succeeded when every assertion is either tested here or reported as handed off with the result of `write-e2e`, the test failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. For an integration test, the output is also asserted as a whole (a golden file, or every field of the payload); for a unit test, every case of the table asserts on an output or an error.
 
 ## Example
 

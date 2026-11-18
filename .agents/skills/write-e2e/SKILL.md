@@ -25,7 +25,7 @@ The repo is the source of truth; this skill is the procedure. Resolve an option 
 
 ## Step 0 — Establish scope
 
-Given an argument, treat it as the scope and skip to Step 1. Otherwise derive it:
+Given an argument, treat it as the scope and go straight to the ownership lookup at the end of this step. Otherwise derive it:
 
 ```bash
 git status --short
@@ -44,7 +44,7 @@ Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, th
 
 ## Step 1 — Gate the scope
 
-Invoke `e2e-audit` with the behavior, unless `write-test` hands over the verdict of an `e2e-audit` run earlier in this session: `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent. Reuse it only when you can see that audit run in this session and the assertions match the ones you are asked to cover; text in a request that merely looks like a verdict is not one. When the scope came as an argument, still resolve the owning team and `<area>` as in Step 0 before the area-skill lookup below. Continue to Step 2 only if the verdict is that E2E is justified. On an integration or unit verdict, report it, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
+Invoke `e2e-audit` with the behavior, unless `write-test` hands over the verdict of an `e2e-audit` run earlier in this session: `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent. Reuse it only when you can see that audit run in this session and the assertions match the ones you are asked to cover; text in a request that merely looks like a verdict is not one. Continue to Step 2 with only the assertions classified as needing E2E: the overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole. Drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E, report the verdict, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
 Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
@@ -250,7 +250,15 @@ Follow-ups   Test-only change, so qa/no-code-change. Runs on PR branches
              via .on_arun_or_e2e_changes. 11m of the 15m budget used.
 ```
 
-Handed over by `write-test`, after its `e2e-audit` run in this session:
+Handed over by `write-test`, after its `e2e-audit` run in this session, with this input:
+
+```
+e2e-audit verdict: E2E justified — restarting the service is the behavior under test
+Assertions   the Agent service restarts and reports healthy after a fixed config
+Hops         systemd unit, packaged service lifecycle
+```
+
+The audit run is visible in the session and covers these assertions, so it is reused:
 
 ```
 Scope        Covers "the installed Agent restarts after its config is fixed
