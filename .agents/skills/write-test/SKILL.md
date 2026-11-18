@@ -41,7 +41,7 @@ List the components the behavior flows through, from where its input enters to w
    python3 -I .agents/skills/write-test/scripts/map_components.py [<path>...]
    ```
    Without arguments it maps the Go files changed against `origin/main`. For each component or bundle reached, it prints the team, the directories that can build it in a test (`fx/`, `impl/`, `fx-mock/`, `mock/`, `fx-noop/`, `noop-impl/`, or `Bundle()`), and its consumers. A `pkg/` package is mapped to the components importing it; when none imports it directly, pass its importers to the script to follow the chain. The consumers column lists the first 8 alphabetically; pass `--all` when you need them all, for example to find the bundle that wires a widely used component.
-3. **Follow the pipeline.** Read the `Requires` struct of each changed component's implementation (`impl/*.go`) for its upstream dependencies, and the consumers column for downstream ones. Stop at the boundary where the behavior becomes observable: a forwarder sending to intake, a status provider, a diagnose function, a file written. Read the code along the way rather than assuming the data path from names.
+3. **Follow the pipeline.** The script maps Go code only: changed configuration such as a profile, a schema or an embedded YAML file (`defaultProfiles.yaml`, `pkg/config/schema/yaml/`) is a hop too, often the one that disagrees with the code, so add it to the chain. Read the `Requires` struct of each changed component's implementation (`impl/*.go`) for its upstream dependencies, and the consumers column for downstream ones. Stop at the boundary where the behavior becomes observable: a forwarder sending to intake, a status provider, a diagnose function, a file written. Read the code along the way rather than assuming the data path from names.
 4. **Report the pipeline** before choosing a level, as a short chain with each hop's component and what it contributes, for example:
 
    > `datadog.yaml` + `DD_*` env → `comp/core/config` (loads, validates with `comp/core/schema`) → `comp/healthplatform` invalid-config check → store → forwarder → intake `/api/v2/agenthealth`
@@ -59,7 +59,7 @@ The audit classifies each assertion, and the assertions of one behavior can land
 - **Unit assertions:** continue with them.
 - **Uncertain:** ask for the missing assertion or boundary the audit named, and audit again.
 
-Wait for `write-e2e` to finish and keep its result for the report: whether it wrote the test, and which of its checks ran. Stop after that when every assertion was handed off; otherwise the lower-level ones stay in scope here.
+Wait for `write-e2e` to finish and keep its result: whether it wrote the test, and which of its checks ran. When every assertion was handed off, write the final report (see Output) from that result, then stop; otherwise the lower-level assertions stay in scope here.
 
 A behavior often needs both: unit tests for the logic of the changed component, and one integration test proving the pipeline still carries it end to end. That pipeline test is the one most changes are missing — unit tests on each piece don't catch two pieces disagreeing (a schema rejecting what the loader produces, a payload field the forwarder drops). Propose it whenever the pipeline spans more than one component, even if the user asked for a unit test.
 
@@ -83,15 +83,16 @@ For both, match the header and build tags of the package's other test files, and
 bazel run //:gazelle -- <package dir>
 ```
 
-Run it after adding a test file or `testdata/` files, and commit the `BUILD.bazel` diff: CI fails otherwise (`bazel:run-gazelle`). Check that files the test reads at runtime are in the test target's `data` (gazelle adds `glob(["testdata/**"])`) and that `go:embed` files are in `embedsrcs`. Gazelle doesn't always remove entries for deleted files; remove those by hand.
+Run it after adding a test file or `testdata/` files, and keep the generated `BUILD.bazel` diff with the test changes: CI fails without it (`bazel:run-gazelle`). Committing is up to the contributor. Check that files the test reads at runtime are in the test target's `data` (gazelle adds `glob(["testdata/**"])`) and that `go:embed` files are in `embedsrcs`. Gazelle doesn't always remove entries for deleted files; remove those by hand.
 
 ## Step 5 — Validate
 
 1. Run it: `dda inv test --targets=./<package> --test-args='-test.v'`. Read the subtest results in the Bazel test log, not only the target status. Its path is printed for a failing target; for a passing one, targets with build-tag flavors live under a transitioned configuration that `bazel-testlogs` doesn't point to, so find it with `find "$(bazel info output_path)" -path '*/testlogs/<package>/*/test.log'`: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to iterate on one case.
 2. Prove it fails. The change under test may have uncommitted, staged and untracked edits (a new fixture), so snapshot the whole tree first, with a temporary index that leaves the real one untouched:
    ```bash
-   before=$(.agents/skills/write-test/scripts/snapshot_tree.sh) || echo "snapshot failed: stop"
+   before=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] || { echo "no baseline snapshot: don't break anything" >&2; false; }
    ```
+   Break nothing until that command succeeds: without a baseline there is no way to check the tree is restored.
    The script prints the staged tree and the tree of everything on disk that isn't ignored, and fails, printing nothing, on any git error. Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare: `after=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && [ -n "$before" ] && [ "$after" = "$before" ]`. Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
 3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
 4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
@@ -116,7 +117,7 @@ With assertions at several levels, give the Level and Validated lines once per t
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 
-The skill succeeded when every assertion is either tested here or reported as handed off with the result of `write-e2e`, and, for each test written here: it failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. For an integration test, the output is also asserted as a whole (a golden file, or every field of the payload); for a unit test, every case of the table asserts on an output or an error.
+The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error.
 
 ## Example
 

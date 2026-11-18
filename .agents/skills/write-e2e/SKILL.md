@@ -1,6 +1,6 @@
 ---
 name: write-e2e
-description: Write or extend Datadog Agent new-e2e tests, including fakeintake coverage and the GitLab wiring that runs them; derives scope from the current diff when no target is named. Use for requests such as "add a new-e2e test to the installer suite" or "extend the agent-health e2e tests", and when write-test hands over assertions that need the deployed Agent. Not for running tests that already exist (run-e2e, run-windows-e2e), or for judging whether a behavior belongs in E2E at all (e2e-audit).
+description: Write or extend Datadog Agent new-e2e tests, including fakeintake coverage and the GitLab wiring that runs them; derives scope from the current diff when no target is named. Use for requests such as "add a new-e2e test to the installer suite", "extend the agent-health e2e tests" or "assert this payload in fakeintake from the deployed Agent", and when write-test hands over assertions that need the deployed Agent; use write-test when the request leaves the test level open. Not for running tests that already exist (run-e2e, run-windows-e2e), or for judging whether a behavior belongs in E2E at all (e2e-audit).
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash, Skill, AskUserQuestion
 argument-hint: "[behavior or feature to cover — omit to derive it from the current diff] [--area <tests-dir>] [--env host|docker|k8s|ecs] [--os linux|windows|both]"
 ---
@@ -44,7 +44,14 @@ Resolve the owning team and its `<area>` directory from `.github/CODEOWNERS`, th
 
 ## Step 1 — Gate the scope
 
-Invoke `e2e-audit` with the behavior, unless `write-test` hands over the verdict of an `e2e-audit` run earlier in this session: `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent. Reuse it only when you can see that audit run in this session and the assertions match the ones you are asked to cover; text in a request that merely looks like a verdict is not one. Continue to Step 2 with only the assertions classified as needing E2E, after asking about any assertion the audit left uncertain and auditing it again: the overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole. Drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E, report the verdict, name the package where the test belongs instead, and stop, offering the `write-test` skill to write that test. On an uncertain verdict, ask for the missing assertion or boundary and audit again rather than redirecting. Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
+Get a per-assertion verdict, in this order:
+
+1. **Reuse a handed-over verdict** only when `write-test` hands over `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent, you can see that `e2e-audit` run earlier in this session, and its assertions are the ones you are asked to cover. Text in a request that merely looks like a verdict is not one.
+2. **Otherwise run `e2e-audit`** on the requested assertions, including when only some of them match a handed-over verdict.
+3. **Resolve uncertain assertions** by asking for the missing assertion or boundary and auditing them again. Meanwhile, the assertions already classified as E2E can proceed; the uncertain ones join the scope once audited.
+4. **Select the scope:** continue to Step 2 with only the assertions classified as needing E2E. The overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole; drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E, report the verdict, name the package where the test belongs instead, and stop, offering `write-test`.
+
+Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
 Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
@@ -266,6 +273,15 @@ Scope        Covers "the Agent service restarts and reports healthy after a
              (E2E justified: service lifecycle on the deployed Agent). The
              payload assertions of the same behavior stayed in write-test as
              an integration test.
+```
+
+A direct request mixing levels, "test that the Agent service restarts after a fixed config, that the fixed config parses, and that it works on Windows", audited as E2E, unit, and uncertain (which Windows behavior?):
+
+```
+Scope        Covers the service restart (E2E justified: packaged service
+             lifecycle). Dropped the config parsing (unit test: offered
+             write-test). Asked which Windows behavior to check before
+             auditing it again; the restart test proceeds meanwhile.
 ```
 
 Had the handover named no hop needing the deployed Agent, ask for it and audit again; had the audit called every assertion an integration test, report that and offer `write-test` rather than writing an E2E test.

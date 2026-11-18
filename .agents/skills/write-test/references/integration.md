@@ -61,11 +61,12 @@ Port `0` avoids collisions between tests running in parallel. Shorten the sendin
 
 For status, diagnose or flare output, call the component's provider and assert on what it returns.
 
-## Assert on the whole output, with golden files
+## Assert on what the contract covers
 
-When the output is a structured payload, compare all of it against a golden file in `testdata/`, after replacing the volatile values (timestamps, hostname, version, temporary paths, hashed IDs) with placeholders. Keep the scenario inputs next to it, one set of files per scenario, and run one subtest per scenario.
+Assert on all of the output the behavior's contract covers, and only on it. Why: asserting on a few fields lets the others regress silently, which is how a pipeline breaks without any test failing; asserting on fields outside the contract makes the test fail on unrelated changes.
 
-Why: asserting on a few fields lets the others regress silently, which is how a pipeline breaks without any test failing. A golden file also documents the payload for reviewers, and a scenario is added by adding files.
+- **The whole payload is the contract** (a health report, an issue's content): compare it against a golden file in `testdata/`, after replacing the volatile values (timestamps, hostname, version, temporary paths, hashed IDs) with placeholders. Keep the scenario inputs next to it, one set of files per scenario, and run one subtest per scenario. A golden file also documents the payload for reviewers, and a scenario is added by adding files.
+- **One part of a shared payload is the contract** (a metric in the agent telemetry payload, which carries every other component's metrics too): extract that part wherever the payload puts it, and compare all of it, every series with its value and tags, rather than looking up the one series you expect. That is how an extra or missing tag, or a series that should not be there, fails the test.
 
 When normalizing, mind the platform: a Windows temporary path appears JSON-escaped in the payload (`C:\\Users\\...`), so replace the escaped form and convert separators, or the test only passes on Linux.
 
@@ -81,6 +82,10 @@ Don't assert that something doesn't happen by watching a quiet window (`require.
 When several payloads arrive, pick the latest one explicitly, and break ties in favor of the later arrival.
 
 ## Keep tests independent
+
+Some state is process-wide and outside your control: metrics registered in the global telemetry registry when their package loads (`pkg/util/telemetry`), for example. Other tests reset that registry (the telemetry mock, the telemetry fx module when it stops), leaving those metrics in a registry nothing gathers, so a test reading them passes alone and fails after them. Use the component the Agent uses for that state (`telemetryimpl.GetCompatComponent()` for the registry, not the fx module), and put the test in a package of its own: a separate test binary, where nothing resets the state first. Say why in the package documentation, so nobody adds a resetting test next to it.
+
+When the output reports changes since its previous emission (agent telemetry reports counters as deltas), have each scenario build its own pipeline and take a first, baseline output before acting. The scenario then asserts on what it caused only, whatever ran before it in the process.
 
 Restore every global you change (configurations, override functions, registries, environment variables) with `t.Cleanup`. Don't run these tests with `t.Parallel()` when they replace process-wide state. Check that the test also passes when run alone (`dda inv test --targets=./<package> --test-args='-test.run=TestX/<case>'`), not only after the other tests of the package.
 
