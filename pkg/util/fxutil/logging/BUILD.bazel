@@ -6,6 +6,7 @@ go_library(
     srcs = [
         "logging.go",
         "sender.go",
+        "shutdown.go",
         "startup.go",
         "tracer.go",
     ],
@@ -19,11 +20,15 @@ go_library(
 
 dd_agent_go_test(
     name = "logging_test",
-    srcs = ["startup_test.go"],
+    srcs = [
+        "shutdown_test.go",
+        "startup_test.go",
+    ],
     embed = [":logging"],
     deps = [
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@org_uber_go_fx//:fx",
         "@org_uber_go_fx//fxevent",
     ],
 )

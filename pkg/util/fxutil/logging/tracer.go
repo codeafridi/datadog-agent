@@ -53,10 +53,15 @@ type FxTracingLogger struct {
 	startTime  time.Time  // Fx startup time
 
 	// The following fields are subject to concurrent access.
-	fxLogger       fxevent.Logger // The underlying fxlogger, fxevent are forwarded to this logger.
-	debugLogger    io.Writer      // The logger used to write debug logs.
-	traceAgentPort string         // The port of the trace agent
-	spans          []*Span        // Buffer spans during startup, reset to nil when the Fx initialization is complete.
+	fxLogger         fxevent.Logger // The underlying fxlogger, fxevent are forwarded to this logger.
+	debugLogger      io.Writer      // The logger used to write debug logs.
+	traceAgentPort   string         // The port of the trace agent
+	spans            []*Span        // Buffer spans during startup, reset to nil when the Fx initialization is complete.
+	shutdownTrace    *StartupTrace
+	shutdownHook     *StartupPhase
+	shutdownSend     func([]*Span)
+	shutdownVersion  string
+	shutdownFinished bool
 }
 
 // withFxTracer wraps the fxlogger with a fxTracingLogger.
@@ -92,6 +97,15 @@ func (l *FxTracingLogger) LogEvent(event fxevent.Event) {
 
 	case *fxevent.Started:
 		l.handleStarted(e)
+
+	case *fxevent.OnStopExecuting:
+		l.handleOnStopExecuting(e)
+
+	case *fxevent.OnStopExecuted:
+		l.handleOnStopExecuted(e)
+
+	case *fxevent.Stopped:
+		l.handleStopped(e)
 	}
 }
 
@@ -134,12 +148,12 @@ func (l *FxTracingLogger) handleRun(e *fxevent.Run) {
 	}
 
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	// drop the span if the Fx initialization is complete
 	if l.spans == nil {
 		return
 	}
 	l.spans = append(l.spans, span)
-	l.mu.Unlock()
 }
 
 // handleOnStartExecuted captures OnStart hook execution time.
@@ -162,12 +176,12 @@ func (l *FxTracingLogger) handleOnStartExecuted(e *fxevent.OnStartExecuted) {
 	}
 
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	// drop the span if the Fx initialization is complete
 	if l.spans == nil {
 		return
 	}
 	l.spans = append(l.spans, span)
-	l.mu.Unlock()
 }
 
 // handleStarted is called when Fx startup completes.

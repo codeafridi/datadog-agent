@@ -63,7 +63,7 @@ func runSystemProbe(ctxChan <-chan context.Context, errChan chan error) error {
 			settings settings.Component,
 			deps module.FactoryDependencies,
 		) error {
-			defer stopSystemProbe()
+			defer func() { stopSystemProbe(logging.StartShutdownTrace(fxLogger)) }()
 			startupTrace := logging.StartStartupTrace(fxLogger, "startSystemProbe", version.AgentVersion)
 			err := startSystemProbe(rcclient, settings, deps, startupTrace)
 			if err != nil {

@@ -14,7 +14,7 @@ import (
 	"go.uber.org/fx/fxevent"
 )
 
-// StartupTrace records synchronous startup work that runs after Fx Started.
+// StartupTrace records synchronous lifecycle work, including post-Fx startup and shutdown.
 // A trace and its phases must be used from the same goroutine. Nil traces and
 // phases are safe to use when Fx tracing is disabled.
 type StartupTrace struct {
@@ -46,6 +46,11 @@ func StartStartupTrace(logger fxevent.Logger, operationName, agentVersion string
 	if l.traceAgentPort == "" {
 		return nil
 	}
+	return l.newLifecycleTrace(operationName, agentVersion)
+}
+
+// newLifecycleTrace requires l.mu to be held.
+func (l *FxTracingLogger) newLifecycleTrace(operationName, agentVersion string) *StartupTrace {
 	startedAt := time.Now()
 	return &StartupTrace{
 		root: &Span{

@@ -336,7 +336,7 @@ func run(log log.Component,
 	gpuReadiness *gpu.Readiness,
 ) error {
 	defer func() {
-		stopAgent(cfg, sysprobeConf)
+		stopAgentWithTrace(cfg, sysprobeConf, logging.StartShutdownTrace(fxLogger))
 	}()
 
 	// Handle SIGDANGER (AIX paging space low); no-op on other platforms.
@@ -865,27 +865,45 @@ func StopAgentWithDefaults(cfg config.Component, sysprobeConf sysprobeconfig.Com
 
 // stopAgent Tears down the agent process
 func stopAgent(cfg config.Component, sysprobeConf sysprobeconfig.Component) {
+	stopAgentWithTrace(cfg, sysprobeConf, nil)
+}
+
+func stopAgentWithTrace(cfg config.Component, sysprobeConf sysprobeconfig.Component, trace *logging.StartupTrace) {
 	// retrieve the agent health before stopping the components
 	// GetReadyNonBlocking has a 100ms timeout to avoid blocking
+	phase := trace.StartPhase("health.GetReadyNonBlocking")
 	health, err := health.GetReadyNonBlocking()
+	phase.Finish(err)
 	if err != nil {
 		pkglog.Warnf("Agent health unknown: %s", err)
 	} else if len(health.Unhealthy) > 0 {
 		pkglog.Warnf("Some components were unhealthy: %v", health.Unhealthy)
 	}
 
+	phase = trace.StartPhase("clcrunnerapi.StopCLCRunnerServer")
 	clcrunnerapi.StopCLCRunnerServer()
+	phase.Finish(nil)
+	phase = trace.StartPhase("jmxfetch.StopJmxfetch")
 	jmxfetch.StopJmxfetch()
+	phase.Finish(nil)
 
+	phase = trace.StartPhase("profiler.Stop")
 	profiler.Stop()
+	phase.Finish(nil)
 
 	// gracefully shut down any component
+	phase = trace.StartPhase("main_context.cancel")
 	_, cancel := pkgcommon.GetMainCtxCancel()
 	cancel()
+	phase.Finish(nil)
 
 	// shutdown dependent services
+	phase = trace.StartPhase("stopDependentServices")
 	stopDependentServices(cfg, sysprobeConf)
+	phase.Finish(nil)
 
+	phase = trace.StartPhase("log.Flush")
 	pkglog.Info("See ya!")
 	pkglog.Flush()
+	phase.Finish(nil)
 }

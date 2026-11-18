@@ -127,3 +127,45 @@ trace-agent or APM sampling can leave a startup attempt absent. This diagnostic
 trace does not measure image pulls, init containers, Fx initialization, first
 successful check or first delivered heartbeat, and is not a fleet completeness
 metric.
+
+## Core Agent and system-probe shutdown traces
+
+The same `DD_FX_TRACING_ENABLED=true` opt-in also records graceful shutdown:
+
+```text
+service:dd-agent-fx-init operation_name:stopAgent
+service:dd-agent-fx-init operation_name:stopSystemProbe
+```
+
+Each root starts before explicit process teardown and ends after Fx's component
+`OnStop` hooks. Children use `stopAgent.phase` or `stopSystemProbe.phase`.
+Core phases cover health retrieval, the CLC runner, JMX, profiling, main-context
+cancellation, dependent services and log flushing. System-probe phases cover
+`module.Close`, individual `module.<name>.unregister` and `module.<name>.close`
+calls, the expvar server, profiling, memory monitoring and log flushing.
+Both roots also include each executed Fx stop hook, named by its function.
+Nested durations include their children; do not sum parents and children.
+
+Shutdown delivery is independent of the local core/trace-agent processes. After
+Fx stops, the process sends a gzip-compressed AgentPayload directly to the
+configured primary APM intake (`site` / `apm_config.apm_dd_url`), or the configured
+trace pipeline worker. It uses the Agent HTTP transport's proxy/TLS settings,
+cached hostname and the resolved API key already held in configuration. It
+makes no shutdown-time calls to the core Agent for credentials or metadata.
+The export is synchronous, with one attempt and a two-second deadline; that
+export time is outside the measured shutdown root. Spans carry analytics
+sampling metadata so analytics-enabled retention rules can retain them without
+the local trace-agent processing the payload.
+
+A resolved API key is required. Export is skipped when the primary APM
+destination is disabled; additional-only endpoints are not supported by this
+diagnostic exporter. Secret backend and delegated credentials must already be
+resolved in cached config; this exporter does not resolve or refresh them during
+shutdown. A configured local pipeline or proxy must remain reachable. Network
+failures, expired credentials and `SIGKILL` can still leave traces missing.
+When Fx returns a stop timeout, the root is marked failed and the unfinished
+hook is included up to that deadline with `shutdown.incomplete:true`. A late
+hook completion does not mutate the exported trace. In particular, no completed
+trace is exported if the process is killed during teardown before Fx returns.
+The traces diagnose completed graceful shutdowns; they do not guarantee an
+inventory of all termination attempts.

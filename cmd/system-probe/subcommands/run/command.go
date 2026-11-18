@@ -296,7 +296,7 @@ func run(
 	_ ipc.Component,
 	deps module.FactoryDependencies,
 ) error {
-	defer stopSystemProbe()
+	defer func() { stopSystemProbe(logging.StartShutdownTrace(fxLogger)) }()
 
 	startupTrace := logging.StartStartupTrace(fxLogger, "startSystemProbe", version.AgentVersion)
 	if deps.SysprobeConfig.GetBool("system_probe_config.disable_thp") {
@@ -450,19 +450,30 @@ func startSystemProbe(rcclient rcclient.Component, settings settings.Component, 
 }
 
 // stopSystemProbe Tears down the system-probe process
-func stopSystemProbe() {
-	module.Close()
+func stopSystemProbe(trace *logging.StartupTrace) {
+	phase := trace.StartPhase("module.Close")
+	module.CloseWithTrace(phase)
+	phase.Finish(nil)
 	if common.ExpvarServer != nil {
-		if err := common.ExpvarServer.Shutdown(context.Background()); err != nil {
+		phase = trace.StartPhase("ExpvarServer.Shutdown")
+		err := common.ExpvarServer.Shutdown(context.Background())
+		phase.Finish(err)
+		if err != nil {
 			pkglog.Errorf("error shutting down expvar server: %s", err)
 		}
 	}
+	phase = trace.StartPhase("profiling.Stop")
 	profiling.Stop()
+	phase.Finish(nil)
 	if common.MemoryMonitor != nil {
+		phase = trace.StartPhase("MemoryMonitor.Stop")
 		common.MemoryMonitor.Stop()
+		phase.Finish(nil)
 	}
 
+	phase = trace.StartPhase("log.Flush")
 	pkglog.Flush()
+	phase.Finish(nil)
 }
 
 // setupInternalProfiling is a common helper to configure runtime settings for internal profiling.

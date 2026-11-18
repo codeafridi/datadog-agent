@@ -90,6 +90,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/serializer"
 	"github.com/DataDog/datadog-agent/pkg/util/defaultpaths"
 	"github.com/DataDog/datadog-agent/pkg/util/fxutil"
+	"github.com/DataDog/datadog-agent/pkg/util/fxutil/logging"
 	"github.com/DataDog/datadog-agent/pkg/util/option"
 	"github.com/DataDog/datadog-agent/pkg/util/winutil"
 	// runtime init routines
@@ -159,7 +160,9 @@ func StartAgentWithDefaults(ctxChan <-chan context.Context) (<-chan error, error
 			gpuReadiness *gpu.Readiness,
 
 		) error {
-			defer StopAgentWithDefaults(config, sysprobeConf)
+			defer func() {
+				stopAgentWithTrace(config, sysprobeConf, logging.StartShutdownTrace(fxLogger))
+			}()
 
 			err := startAgent(
 				log,

@@ -191,6 +191,11 @@ func GetStats() map[string]any {
 
 // Close each registered module
 func Close() {
+	CloseWithTrace(nil)
+}
+
+// CloseWithTrace records each module teardown without changing the close order.
+func CloseWithTrace(trace *logging.StartupPhase) {
 	l.Lock()
 	defer l.Unlock()
 
@@ -202,9 +207,13 @@ func Close() {
 	l.forEachModule(func(name sysconfigtypes.ModuleName, mod Module) {
 		currentRouter, ok := l.routers[name]
 		if ok {
+			phase := trace.StartPhase("module." + string(name) + ".unregister")
 			currentRouter.Unregister()
+			phase.Finish(nil)
 		}
+		phase := trace.StartPhase("module." + string(name) + ".close")
 		mod.Close()
+		phase.Finish(nil)
 		delete(l.modules, name)
 	})
 }
