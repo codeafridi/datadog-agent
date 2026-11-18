@@ -129,3 +129,90 @@ func TestShutdownDoesNotExposeTransportSecrets(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualError(t, err, "trace intake request failed")
 }
+
+func TestShutdownAdditionalEndpoints(t *testing.T) {
+	for _, primary := range []bool{true, false} {
+		t.Run(map[bool]string{true: "staging-dual-shipping", false: "additional-only"}[primary], func(t *testing.T) {
+			cfg := configmock.New(t)
+			key := ""
+			if primary {
+				key = "primary-key"
+			}
+			cfg.Set("api_key", key, model.SourceAgentRuntime)
+			cfg.Set("apm_config.apm_dd_url", "https://primary.example", model.SourceAgentRuntime)
+			cfg.Set("apm_config.traces_send_to_main_endpoint", primary, model.SourceAgentRuntime)
+			cfg.Set("apm_config.additional_endpoints", map[string][]string{"https://secondary.example": {"secondary-key", "second-org-key"}}, model.SourceAgentRuntime)
+			type request struct {
+				url, key string
+				body     []byte
+			}
+			requests := make(chan request, 3)
+			sender := newShutdownSender(cfg, "host")
+			sender.client.Transport = shutdownRoundTripper(func(req *http.Request) (*http.Response, error) {
+				data, err := io.ReadAll(req.Body)
+				if err != nil {
+					return nil, err
+				}
+				requests <- request{req.URL.String(), req.Header.Get("DD-API-KEY"), data}
+				return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})
+			require.NoError(t, sender.export(context.Background(), shutdownTestSpans()))
+			close(requests)
+			var got []string
+			var payload []byte
+			for req := range requests {
+				got = append(got, req.url+"|"+req.key)
+				if payload == nil {
+					payload = req.body
+				} else {
+					assert.Equal(t, payload, req.body)
+				}
+			}
+			expected := []string{"https://secondary.example/api/v0.2/traces|secondary-key", "https://secondary.example/api/v0.2/traces|second-org-key"}
+			if primary {
+				expected = append(expected, "https://primary.example/api/v0.2/traces|primary-key")
+			}
+			assert.ElementsMatch(t, expected, got)
+		})
+	}
+}
+
+func TestShutdownSlowPrimaryDoesNotBlockSecondary(t *testing.T) {
+	cfg := configmock.New(t)
+	cfg.Set("api_key", "primary-key", model.SourceAgentRuntime)
+	cfg.Set("apm_config.apm_dd_url", "https://slow.example", model.SourceAgentRuntime)
+	cfg.Set("apm_config.additional_endpoints", map[string][]string{"https://fast.example": {"secondary-key"}}, model.SourceAgentRuntime)
+	synctest.Test(t, func(t *testing.T) {
+		secondary := make(chan struct{}, 1)
+		sender := newShutdownSender(cfg, "host")
+		sender.client.Transport = shutdownRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host == "slow.example" {
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}
+			secondary <- struct{}{}
+			return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(""))}, nil
+		})
+		before := time.Now()
+		sender.send(shutdownTestSpans())
+		assert.Equal(t, shutdownExportTimeout, time.Since(before))
+		assert.Len(t, secondary, 1, "secondary must be attempted within the same budget")
+	})
+}
+
+func TestShutdownUnresolvedPrimaryStillSendsSecondary(t *testing.T) {
+	cfg := configmock.New(t)
+	cfg.Set("api_key", "ENC[private-primary]", model.SourceAgentRuntime)
+	cfg.Set("apm_config.additional_endpoints", map[string][]string{"https://secondary.example": {"resolved-secondary"}}, model.SourceAgentRuntime)
+	sender := newShutdownSender(cfg, "host")
+	sent := make(chan string, 1)
+	sender.client.Transport = shutdownRoundTripper(func(req *http.Request) (*http.Response, error) {
+		sent <- req.Header.Get("DD-API-KEY")
+		return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	err := sender.export(context.Background(), shutdownTestSpans())
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "private-primary")
+	require.Len(t, sent, 1)
+	assert.Equal(t, "resolved-secondary", <-sent)
+}

@@ -17,6 +17,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/config/model"
@@ -59,25 +60,11 @@ func (s *shutdownSender) export(ctx context.Context, spans []*logging.Span) erro
 	if len(spans) == 0 {
 		return nil
 	}
-	// Diagnostic export must not bypass an explicit prohibition on the primary
-	// destination. Additional endpoints and delegated auth need their own exporter.
-	if !s.cfg.GetBool("apm_config.traces_send_to_main_endpoint") {
-		return errors.New("primary APM destination disabled")
+	targets, destinationErr := s.destinations()
+	if len(targets) == 0 {
+		return destinationErr
 	}
-	apiKey := configutils.SanitizeAPIKey(s.cfg.GetString("api_key"))
-	if apiKey == "" || strings.HasPrefix(apiKey, "ENC[") || configutils.IsDelaDirective(apiKey) {
-		return errors.New("no resolved API key available")
-	}
-	endpoint := configutils.GetMainEndpoint(s.cfg, "https://trace.agent.", "apm_config.apm_dd_url")
-	for _, prefix := range []string{"observability_pipelines_worker", "vector"} {
-		if s.cfg.GetBool(prefix + ".traces.enabled") {
-			endpoint = s.cfg.GetString(prefix + ".traces.url")
-			if endpoint == "" {
-				return errors.New("trace pipeline destination missing")
-			}
-			break
-		}
-	}
+
 	tags := make(map[string]string)
 	for _, tag := range s.cfg.GetStringSlice("tags") {
 		k, v, ok := strings.Cut(tag, ":")
@@ -126,11 +113,70 @@ func (s *shutdownSender) export(ctx context.Context, spans []*logging.Span) erro
 	if err := zw.Close(); err != nil {
 		return errors.New("cannot finish shutdown trace compression")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/api/v0.2/traces", &body)
+	// All destinations share one deadline. A slow primary must not consume the
+	// entire budget before a secondary (such as ddstaging) is attempted.
+	results := make(chan error, len(targets))
+	var sends sync.WaitGroup
+	for _, target := range targets {
+		sends.Go(func() { results <- s.post(ctx, target, body.Bytes()) })
+	}
+	sends.Wait()
+	close(results)
+	errs := []error{destinationErr}
+	for err := range results {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+type shutdownDestination struct{ url, apiKey string }
+
+func (s *shutdownSender) destinations() ([]shutdownDestination, error) {
+	var targets []shutdownDestination
+	seen := make(map[shutdownDestination]bool)
+	skipped := 0
+	add := func(endpoint, key string) {
+		key = configutils.SanitizeAPIKey(key)
+		if endpoint == "" || key == "" || strings.HasPrefix(key, "ENC[") || configutils.IsDelaDirective(key) {
+			skipped++
+			return
+		}
+		target := shutdownDestination{url: strings.TrimRight(endpoint, "/"), apiKey: key}
+		if !seen[target] {
+			seen[target] = true
+			targets = append(targets, target)
+		}
+	}
+	if s.cfg.GetBool("apm_config.traces_send_to_main_endpoint") {
+		endpoint := configutils.GetMainEndpoint(s.cfg, "https://trace.agent.", "apm_config.apm_dd_url")
+		for _, prefix := range []string{"observability_pipelines_worker", "vector"} {
+			if s.cfg.GetBool(prefix + ".traces.enabled") {
+				endpoint = s.cfg.GetString(prefix + ".traces.url")
+				break
+			}
+		}
+		add(endpoint, s.cfg.GetString("api_key"))
+	}
+	for endpoint, keys := range s.cfg.GetStringMapStringSlice("apm_config.additional_endpoints") {
+		for _, key := range keys {
+			add(endpoint, key)
+		}
+	}
+	if len(targets) == 0 {
+		return nil, errors.New("no resolved APM destination available")
+	}
+	if skipped > 0 {
+		return targets, fmt.Errorf("%d APM destinations lacked a URL or resolved credentials", skipped)
+	}
+	return targets, nil
+}
+
+func (s *shutdownSender) post(ctx context.Context, target shutdownDestination, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.url+"/api/v0.2/traces", bytes.NewReader(data))
 	if err != nil {
 		return errors.New("invalid trace intake destination")
 	}
-	req.Header.Set("DD-API-KEY", apiKey)
+	req.Header.Set("DD-API-KEY", target.apiKey)
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	req.Header.Set("Content-Encoding", "gzip")
 	resp, err := s.client.Do(req)
@@ -138,7 +184,6 @@ func (s *shutdownSender) export(ctx context.Context, spans []*logging.Span) erro
 		return errors.New("trace intake request failed")
 	}
 	defer resp.Body.Close()
-	// Bound the response read as well as the request lifetime.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("trace intake returned HTTP %d", resp.StatusCode)
