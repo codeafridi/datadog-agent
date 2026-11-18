@@ -172,12 +172,10 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 		switch ev.Type {
 		case workloadmeta.EventTypeSet:
 			tagInfos = append(tagInfos, c.tagEntity(ev)...)
-			tagInfos = append(tagInfos, c.retagProcessContainer(ev.Entity)...)
 
 		case workloadmeta.EventTypeUnset:
 			c.dependencies.forget(entityID)
 			tagInfos = append(tagInfos, c.handleDelete(ev)...)
-			tagInfos = append(tagInfos, c.retagProcessContainer(ev.Entity)...)
 
 		default:
 			log.Errorf("cannot handle event of type %d", ev.Type)
@@ -292,6 +290,11 @@ func (c *WorkloadMetaCollector) handleSet(ev workloadmeta.Event) []*types.TagInf
 // by, recorded by readers with trackKey.
 func dependencyKeys(entity workloadmeta.Entity) []string {
 	switch e := entity.(type) {
+	case *workloadmeta.Process:
+		// Containers read the promotable tags of their processes
+		if containerID := e.GetContainerID(); containerID != "" && hasPromotableProcessTag(e) {
+			return []string{containerID}
+		}
 	case *workloadmeta.KubernetesAutoscaler:
 		// Pods read the autoscalers of their workload
 		return []string{autoscalerTargetKey(e.Target())}
@@ -499,35 +502,6 @@ func (c *WorkloadMetaCollector) handleProcess(ev workloadmeta.Event) []*types.Ta
 	}
 }
 
-// retagProcessContainer recomputes the tags of the container of the process,
-// as process changes do not generate an event for the container.
-func (c *WorkloadMetaCollector) retagProcessContainer(entity workloadmeta.Entity) []*types.TagInfo {
-	if !c.promoteProcessTags {
-		return nil
-	}
-
-	process, ok := entity.(*workloadmeta.Process)
-	if !ok || !hasPromotableProcessTag(process) {
-		return nil
-	}
-
-	containerID := process.GetContainerID()
-	if containerID == "" {
-		return nil
-	}
-
-	container, err := c.store.GetContainer(containerID)
-	if err != nil {
-		return nil
-	}
-
-	return c.handleContainer(workloadmeta.Event{
-		Type:       workloadmeta.EventTypeSet,
-		Entity:     container,
-		IsComplete: c.entityCompleteness[container.EntityID],
-	})
-}
-
 // Processes without a promotable tag cannot change the tags of their container.
 func hasPromotableProcessTag(process *workloadmeta.Process) bool {
 	if process.Service == nil {
@@ -544,6 +518,7 @@ func hasPromotableProcessTag(process *workloadmeta.Process) bool {
 }
 
 func (c *WorkloadMetaCollector) addPromotedProcessTags(containerID string, tagList *taglist.TagList) {
+	c.store.trackKey(workloadmeta.KindProcess, containerID)
 	processes := c.store.ListProcessesWithFilter(func(process *workloadmeta.Process) bool {
 		return process.GetContainerID() == containerID
 	})

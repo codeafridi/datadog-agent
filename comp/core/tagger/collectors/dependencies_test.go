@@ -192,6 +192,22 @@ func TestEntityInBundleIsTaggedOnce(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+func TestProcessLosingPromotableTagRetagsContainer(t *testing.T) {
+	h := newDependencyTestHarness(t)
+	h.collector.promoteProcessTags = true
+
+	h.add(newContainer("ctr-a"))
+	got := h.add(newProcessWithTags(1, "ctr-a", "training_run_id:run-1"))
+	assert.Contains(t, tagInfoFor(got, containerTaggerID("ctr-a")).LowCardTags, "training_run_id:run-1")
+
+	// The process no longer has the tag. Its new state has no key, but the
+	// container read the key the process had.
+	got = h.add(newProcessWithTags(1, "ctr-a", "foo:bar"))
+	containerTags := tagInfoFor(got, containerTaggerID("ctr-a"))
+	require.NotNil(t, containerTags, "ctr-a was not re-tagged")
+	assert.NotContains(t, containerTags.LowCardTags, "training_run_id:run-1")
+}
+
 // When one source of a pod is removed while another remains, workloadmeta
 // sends a set event with the pod as it was before the removal, so that its
 // tags don't change until the last source is removed. A dependency change
