@@ -17,8 +17,10 @@ type dependencyIndex struct {
 }
 
 type taggedEntity struct {
-	reads      map[workloadmeta.EntityID]struct{}
-	isComplete bool
+	reads map[workloadmeta.EntityID]struct{}
+	// event is the last event the entity was tagged from, which a dependency
+	// change re-tags it from
+	event workloadmeta.Event
 }
 
 func newDependencyIndex() *dependencyIndex {
@@ -28,16 +30,16 @@ func newDependencyIndex() *dependencyIndex {
 	}
 }
 
-// replace sets the entities that reader depends on, dropping the previous
-// ones. isComplete is the completeness of the event reader was tagged from,
-// reused when a dependency re-tags it. The index takes ownership of reads.
-func (d *dependencyIndex) replace(reader workloadmeta.EntityID, reads map[workloadmeta.EntityID]struct{}, isComplete bool) {
+// replace sets the entities that the entity of ev depends on, dropping the
+// previous ones. The index takes ownership of reads.
+func (d *dependencyIndex) replace(ev workloadmeta.Event, reads map[workloadmeta.EntityID]struct{}) {
+	reader := ev.Entity.GetID()
 	d.forget(reader)
 	if len(reads) == 0 {
 		return
 	}
 
-	d.tagged[reader] = taggedEntity{reads: reads, isComplete: isComplete}
+	d.tagged[reader] = taggedEntity{reads: reads, event: ev}
 	for read := range reads {
 		readers, ok := d.readers[read]
 		if !ok {
@@ -66,8 +68,10 @@ func (d *dependencyIndex) readersOf(read workloadmeta.EntityID) []workloadmeta.E
 	return readers
 }
 
-func (d *dependencyIndex) isComplete(reader workloadmeta.EntityID) bool {
-	return d.tagged[reader].isComplete
+// lastEvent returns the event that reader was last tagged from.
+func (d *dependencyIndex) lastEvent(reader workloadmeta.EntityID) (workloadmeta.Event, bool) {
+	tagged, ok := d.tagged[reader]
+	return tagged.event, ok
 }
 
 // trackingStore records the lookups made while tracking is on. Only the

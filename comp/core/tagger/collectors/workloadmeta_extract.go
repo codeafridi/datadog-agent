@@ -197,9 +197,12 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 		}
 	}
 
-	// Workloadmeta updates its store with the whole bundle before sending it,
-	// so the entities tagged above already used the new state of the entities
-	// they depend on.
+	// Readers are re-tagged from their last event rather than from the store:
+	// when one of several sources of an entity is removed, workloadmeta keeps
+	// sending the entity as it was before, while the store drops that
+	// source's data. Readers tagged above are skipped because workloadmeta
+	// updates its store with the whole bundle before sending it, so they
+	// already read the new state of their dependencies.
 	for _, ev := range evBundle.Events {
 		for _, readerID := range c.dependencies.readersOf(ev.Entity.GetID()) {
 			if _, ok := tagged[readerID]; ok {
@@ -207,15 +210,9 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 			}
 			tagged[readerID] = struct{}{}
 
-			reader, ok := c.getEntity(readerID)
-			if !ok {
-				continue
+			if readerEvent, ok := c.dependencies.lastEvent(readerID); ok {
+				tagInfos = append(tagInfos, c.tagEntity(readerEvent)...)
 			}
-			tagInfos = append(tagInfos, c.tagEntity(workloadmeta.Event{
-				Type:       workloadmeta.EventTypeSet,
-				Entity:     reader,
-				IsComplete: c.dependencies.isComplete(readerID),
-			})...)
 		}
 	}
 
@@ -236,7 +233,7 @@ func (c *WorkloadMetaCollector) processEvents(evBundle workloadmeta.EventBundle)
 func (c *WorkloadMetaCollector) tagEntity(ev workloadmeta.Event) []*types.TagInfo {
 	c.store.startTracking()
 	tagInfos := c.handleSet(ev)
-	c.dependencies.replace(ev.Entity.GetID(), c.store.stopTracking(), ev.IsComplete)
+	c.dependencies.replace(ev, c.store.stopTracking())
 	return tagInfos
 }
 
@@ -302,25 +299,6 @@ func (c *WorkloadMetaCollector) handleSet(ev workloadmeta.Event) []*types.TagInf
 	tagInfos = append(tagInfos, c.handleDeleteChildren(source, unseen)...)
 
 	return tagInfos
-}
-
-// getEntity returns the current state of an entity that a dependency change
-// re-tags. Only kinds whose handlers make tracked lookups can be re-tagged.
-func (c *WorkloadMetaCollector) getEntity(id workloadmeta.EntityID) (workloadmeta.Entity, bool) {
-	var entity workloadmeta.Entity
-	var err error
-
-	switch id.Kind {
-	case workloadmeta.KindKubernetesPod:
-		entity, err = c.store.GetKubernetesPod(id.ID)
-	case workloadmeta.KindKubernetesKueueWorkload:
-		entity, err = c.store.GetKubernetesKueueWorkload(id.ID)
-	default:
-		log.Errorf("cannot re-tag entity %q with kind %q", id.ID, id.Kind)
-		return nil, false
-	}
-
-	return entity, err == nil
 }
 
 func (c *WorkloadMetaCollector) handleContainer(ev workloadmeta.Event) []*types.TagInfo {

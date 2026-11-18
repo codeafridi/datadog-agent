@@ -7,6 +7,8 @@ package collectors
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,26 +29,33 @@ import (
 )
 
 func TestDependencyIndex(t *testing.T) {
-	pod := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesPod, ID: "pod"}
+	pod := &workloadmeta.KubernetesPod{EntityID: workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesPod, ID: "pod"}}
 	workload := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueWorkload, ID: "default/job"}
 	flavor := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesKueueResourceFlavor, ID: "a100"}
 
 	d := newDependencyIndex()
 
-	d.replace(pod, map[workloadmeta.EntityID]struct{}{workload: {}, flavor: {}}, true)
-	assert.ElementsMatch(t, []workloadmeta.EntityID{pod}, d.readersOf(workload))
-	assert.ElementsMatch(t, []workloadmeta.EntityID{pod}, d.readersOf(flavor))
-	assert.True(t, d.isComplete(pod))
+	complete := workloadmeta.Event{Type: workloadmeta.EventTypeSet, Entity: pod, IsComplete: true}
+	d.replace(complete, map[workloadmeta.EntityID]struct{}{workload: {}, flavor: {}})
+	assert.ElementsMatch(t, []workloadmeta.EntityID{pod.EntityID}, d.readersOf(workload))
+	assert.ElementsMatch(t, []workloadmeta.EntityID{pod.EntityID}, d.readersOf(flavor))
+	ev, ok := d.lastEvent(pod.EntityID)
+	assert.True(t, ok)
+	assert.Equal(t, complete, ev)
 
-	d.replace(pod, map[workloadmeta.EntityID]struct{}{flavor: {}}, false)
+	incomplete := workloadmeta.Event{Type: workloadmeta.EventTypeSet, Entity: pod}
+	d.replace(incomplete, map[workloadmeta.EntityID]struct{}{flavor: {}})
 	assert.Empty(t, d.readersOf(workload))
-	assert.ElementsMatch(t, []workloadmeta.EntityID{pod}, d.readersOf(flavor))
-	assert.False(t, d.isComplete(pod))
+	assert.ElementsMatch(t, []workloadmeta.EntityID{pod.EntityID}, d.readersOf(flavor))
+	ev, _ = d.lastEvent(pod.EntityID)
+	assert.Equal(t, incomplete, ev)
 
-	d.forget(pod)
+	d.forget(pod.EntityID)
 	assert.Empty(t, d.readersOf(flavor))
 	assert.Empty(t, d.readers)
 	assert.Empty(t, d.tagged)
+	_, ok = d.lastEvent(pod.EntityID)
+	assert.False(t, ok)
 }
 
 func TestTrackingStoreRecordsLookupsOnlyWhileTracking(t *testing.T) {
@@ -159,6 +168,66 @@ func TestEntityInBundleIsTaggedOnce(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count)
+}
+
+// When one source of a pod is removed while another remains, workloadmeta
+// sends a set event with the pod as it was before the removal, so that its
+// tags don't change until the last source is removed. A dependency change
+// must not re-tag the pod from the store, which already lost the removed
+// source's data, neither in the same bundle nor in a later one.
+func TestPartialUnsetKeepsReaderStateOnDependencyChange(t *testing.T) {
+	for _, sameBundle := range []bool{true, false} {
+		t.Run(fmt.Sprintf("same bundle %t", sameBundle), func(t *testing.T) {
+			h := newDependencyTestHarness(t)
+			podID := workloadmeta.EntityID{Kind: workloadmeta.KindKubernetesPod, ID: "pod-a"}
+			// The PodGroup annotation only comes from the kubelet.
+			fromKubelet := &workloadmeta.KubernetesPod{
+				EntityID: podID,
+				EntityMeta: workloadmeta.EntityMeta{
+					Name:        "pod-a",
+					Namespace:   "default",
+					Annotations: map[string]string{kubernetes.KAIPodGroupAnnotationKey: "pg"},
+				},
+			}
+			fromCluster := &workloadmeta.KubernetesPod{
+				EntityID:   podID,
+				EntityMeta: workloadmeta.EntityMeta{Name: "pod-a", Namespace: "default"},
+			}
+			h.store.Notify([]workloadmeta.CollectorEvent{
+				{Type: workloadmeta.EventTypeSet, Source: workloadmeta.SourceNodeOrchestrator, Entity: fromKubelet},
+				{Type: workloadmeta.EventTypeSet, Source: workloadmeta.SourceClusterOrchestrator, Entity: fromCluster},
+			})
+			beforeRemoval, err := h.store.GetKubernetesPod(podID.ID)
+			require.NoError(t, err)
+
+			got := h.add(newKAIPodGroup("pg", "queue-a"))
+			got = append(got, h.process(setEvent(beforeRemoval))...)
+			require.Contains(t, kaiTags(tagInfoFor(got, podTaggerID("pod-a"))), "kai_queue:queue-a")
+
+			// The kubelet removes the pod first. The tagger gets a set event
+			// for the pod as it was before the removal.
+			h.store.Notify([]workloadmeta.CollectorEvent{
+				{Type: workloadmeta.EventTypeUnset, Source: workloadmeta.SourceNodeOrchestrator, Entity: fromKubelet},
+			})
+			afterRemoval, err := h.store.GetKubernetesPod(podID.ID)
+			require.NoError(t, err)
+			require.Empty(t, afterRemoval.Annotations, "the store no longer has the kubelet's annotation")
+
+			updated := newKAIPodGroup("pg", "queue-b")
+			h.store.Set(updated)
+			if sameBundle {
+				got = h.process(setEvent(beforeRemoval), setEvent(updated))
+			} else {
+				h.process(setEvent(beforeRemoval))
+				got = h.process(setEvent(updated))
+			}
+
+			podTags := tagInfoFor(got, podTaggerID("pod-a"))
+			require.NotNil(t, podTags, "pod-a was not re-tagged")
+			assert.Contains(t, kaiTags(podTags), "kai_queue:queue-b")
+			assert.Contains(t, kaiTags(podTags), "kai_pod_group:pg")
+		})
+	}
 }
 
 type dependencyTestHarness struct {
@@ -284,4 +353,28 @@ func newKueueResourceFlavor(name, gpuFamily string) *workloadmeta.KubernetesKueu
 		EntityMeta:         workloadmeta.EntityMeta{Name: name},
 		NodeAffinityLabels: map[string]string{"nvidia.com/gpu.family": gpuFamily},
 	}
+}
+
+func newKAIPodGroup(name, queue string) *workloadmeta.KubernetesKAIPodGroup {
+	return &workloadmeta.KubernetesKAIPodGroup{
+		EntityID: workloadmeta.EntityID{
+			Kind: workloadmeta.KindKubernetesKAIPodGroup,
+			ID:   workloadmeta.GenerateKAIPodGroupEntityID("default", name),
+		},
+		EntityMeta: workloadmeta.EntityMeta{Name: name, Namespace: "default"},
+		QueueName:  queue,
+	}
+}
+
+func kaiTags(tagInfo *types.TagInfo) []string {
+	if tagInfo == nil {
+		return nil
+	}
+	var kai []string
+	for _, tag := range append(tagInfo.LowCardTags, tagInfo.OrchestratorCardTags...) {
+		if strings.HasPrefix(tag, "kai_") {
+			kai = append(kai, tag)
+		}
+	}
+	return kai
 }
