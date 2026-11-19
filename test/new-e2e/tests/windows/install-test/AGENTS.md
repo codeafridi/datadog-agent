@@ -119,3 +119,9 @@ outgoing rollback enablement. Test-only copies observe service settings at
 execution checkpoints without changing production action order. Released-version
 upgrade tests separately cover legacy rollback without the new outgoing enable
 action.
+
+Fleet removal (`FLEET_INSTALL=1`) retains disabled service registrations between
+packages. Explicit `datadog-installer purge` also passes `FLEET_PURGE=1` so MSI
+removes those registrations while continuing to suppress duplicate Fleet hooks.
+`TestFleetRemovalKeepsServices` covers retention, reinstall, and explicit purge;
+the installer suite's existing purge scenario exercises the CLI-to-MSI path.
