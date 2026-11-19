@@ -526,11 +526,7 @@ metrics:
   device.unhealthy:
     metadata:
       metric_type: gauge
-      description: >-
-        Whether the GPU device is unhealthy. On NVIDIA GPUs, the health the
-        Kubernetes device plugin reports to the kubelet. On AMD GPUs, 1 when
-        errors.ecc.uncorrected.total is above 0, that is after an uncorrectable
-        ECC error since the driver loaded, and not reported without that count.
+      description: Whether the GPU device is unhealthy
       aggregation: absolute_usage
     tagsets:
       - device
