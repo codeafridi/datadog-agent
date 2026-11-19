@@ -148,8 +148,8 @@ typedef struct {
 
 typedef struct {
     struct sock *sk;
+    struct sk_buff *skb;
     int segs;
-    __u32 retrans_out_pre;
 } tcp_retransmit_skb_args_t;
 
 typedef struct {

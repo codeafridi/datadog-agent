@@ -23,6 +23,10 @@
 
 #include "protocols/tls/tls-certs.h"
 
+#ifdef COMPILE_RUNTIME
+#include <net/tcp.h> // struct tcp_skb_cb
+#endif
+
 SEC("socket/classifier_entry")
 int socket__classifier_entry(struct __sk_buff *skb) {
     protocol_classifier_entrypoint(skb);
@@ -910,12 +914,11 @@ int BPF_BYPASSABLE_KRETPROBE(kretprobe__tcp_retransmit_skb, int ret) {
 #if defined(COMPILE_CORE) || defined(COMPILE_RUNTIME)
 
 SEC("kprobe/tcp_retransmit_skb")
-int BPF_BYPASSABLE_KPROBE(kprobe__tcp_retransmit_skb, struct sock *sk) {
+int BPF_BYPASSABLE_KPROBE(kprobe__tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     tcp_retransmit_skb_args_t args = {};
     args.sk = sk;
-    args.segs = 0;
-    BPF_CORE_READ_INTO(&args.retrans_out_pre, tcp_sk(sk), retrans_out);
+    args.skb = skb;
     bpf_map_update_with_telemetry(pending_tcp_retransmit_skb, &pid_tgid, &args, BPF_ANY);
     return 0;
 }
@@ -933,11 +936,14 @@ int BPF_BYPASSABLE_KRETPROBE(kretprobe__tcp_retransmit_skb, int rc) {
         return 0;
     }
     struct sock *sk = args->sk;
-    u32 retrans_out_pre = args->retrans_out_pre;
+    struct sk_buff *skb = args->skb;
     bpf_map_delete_elem(&pending_tcp_retransmit_skb, &pid_tgid);
-    u32 retrans_out = 0;
-    BPF_CORE_READ_INTO(&retrans_out, tcp_sk(sk), retrans_out);
-    return handle_retransmit(sk, retrans_out - retrans_out_pre);
+    // count the segments the call resent, as the fentry tracer does, not the change in
+    // retrans_out: that's a gauge, not a total, so the change between the two probes can be
+    // negative and wrap the count
+    u16 segs = 0;
+    BPF_CORE_READ_INTO(&segs, (struct tcp_skb_cb *)&skb->cb[0], tcp_gso_segs);
+    return handle_retransmit(sk, segs);
 }
 
 // These kprobes fire from kernel timer/softirq context. The shared helpers

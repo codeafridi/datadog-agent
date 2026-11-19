@@ -273,9 +273,99 @@ func (s *TracerSuite) TestTCPRetransmit() {
 		if !tr.config.EnableEbpfless {
 			assert.Equal(ct, os.Getpid(), int(conn.Pid))
 		}
+		// every retransmitted segment is also a sent one, so a wrapped count shows up here. The
+		// prebuilt tracer doesn't collect packet counts.
+		if !tr.config.EnableEbpfless && ebpftest.GetBuildMode() != ebpftest.Prebuilt {
+			assert.LessOrEqual(ct, uint64(conn.Monotonic.Retransmits), conn.Monotonic.SentPackets)
+		}
 
 		assert.Equal(ct, addrPort(server.Address()), int(conn.DPort))
 	}, 3*time.Second, 100*time.Millisecond)
+}
+
+// TestTCPRetransmitManySockets retransmits on many sockets at once, so retransmissions run concurrently in
+// timer context on several CPUs, and checks each connection's count against the kernel's own. The count must
+// never exceed tcpi_total_retrans: the kernel counts every segment resent, including tail loss probes, which
+// don't go through tcp_retransmit_skb.
+func (s *TracerSuite) TestTCPRetransmitManySockets() {
+	t := s.T()
+	cfg := testConfig()
+	skipOnEbpflessNotSupported(t, cfg)
+	if ebpftest.GetBuildMode() == ebpftest.SK {
+		t.Skip("SK counts retransmits from tcp_sock, which this doesn't exercise")
+	}
+	tr := setupTracer(t, cfg)
+
+	env := setupNetemTestEnv(t, func(c net.Conn) {
+		io.Copy(io.Discard, c) //nolint:errcheck
+	})
+	// a fresh netns loopback has a 64KiB MTU; lower it so each write is many segments in flight
+	env.setLoopbackMTU(t, 1500)
+
+	const numConns = 64
+	conns := make([]net.Conn, 0, numConns)
+	for i := 0; i < numConns; i++ {
+		c := env.dialInNs(t)
+		t.Cleanup(func() { c.Close() })
+		conns = append(conns, c)
+	}
+
+	env.addNetem(t, "delay", "10ms", "loss", "5%")
+	var wg sync.WaitGroup
+	stop := time.Now().Add(10 * time.Second)
+	for _, c := range conns {
+		wg.Add(1)
+		go func(c net.Conn) {
+			defer wg.Done()
+			payload := make([]byte, 16*1024)
+			for time.Now().Before(stop) {
+				c.SetWriteDeadline(time.Now().Add(time.Second))
+				if _, err := c.Write(payload); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+					return
+				}
+			}
+		}(c)
+	}
+	wg.Wait()
+	env.delNetem(t)
+
+	// wait for the queued data to be acknowledged, so tcpi_total_retrans stops moving
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		for _, c := range conns {
+			info, err := offsetguess.TCPGetInfo(c)
+			require.NoError(ct, err)
+			assert.Zero(ct, info.Unacked, "segments in flight")
+		}
+	}, 30*time.Second, 100*time.Millisecond)
+
+	kernel := make(map[string]uint32, numConns)
+	for _, c := range conns {
+		info, err := offsetguess.TCPGetInfo(c)
+		require.NoError(t, err)
+		kernel[c.LocalAddr().String()] = info.Total_retrans
+	}
+
+	// A fetch only reports a connection whose stats changed since the last one, so keep the latest copy.
+	latest := make(map[string]*network.ConnectionStats, numConns)
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		active, cleanup := getConnections(ct, tr)
+		defer cleanup()
+		for _, c := range conns {
+			if found, ok := findConnection(c.LocalAddr(), c.RemoteAddr(), active); ok {
+				latest[c.LocalAddr().String()] = found
+			}
+		}
+		assert.Len(ct, latest, numConns, "connections found")
+	}, 10*time.Second, 200*time.Millisecond)
+
+	var ours, theirs uint64
+	for addr, conn := range latest {
+		ours += uint64(conn.Monotonic.Retransmits)
+		theirs += uint64(kernel[addr])
+		assert.LessOrEqual(t, conn.Monotonic.Retransmits, kernel[addr], "%s: retransmits above the kernel's count", addr)
+	}
+	t.Logf("retransmits: tracer %d, kernel %d", ours, theirs)
+	require.Positive(t, theirs, "no retransmissions happened")
 }
 
 func (s *TracerSuite) TestTCPRetransmitSharedSocket() {
