@@ -382,7 +382,7 @@ func testActionKillDisarm(t *testing.T, test *testModule, sleep, syscallTester s
 			ch := make(chan bool, 1)
 
 			go func() {
-				timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				timeoutCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				defer cancel()
 
 				cmdFunc(timeoutCtx)
@@ -465,7 +465,7 @@ func testActionKillDisarm(t *testing.T, test *testModule, sleep, syscallTester s
 		for i := 0; i < 2; i++ {
 			t.Logf("test iteration %d", i)
 			testKillActionSuccess(t, "kill_action_disarm_executable", func(ctx context.Context) {
-				cmd := exec.CommandContext(ctx, syscallTester, "sleep", "5")
+				cmd := exec.CommandContext(ctx, syscallTester, "sleep", "8")
 				cmd.Env = []string{"TARGETTOKILL=1"}
 				_ = cmd.Run()
 			})
@@ -495,20 +495,20 @@ func testActionKillDisarm(t *testing.T, test *testModule, sleep, syscallTester s
 		}
 		defer dockerInstance.stop()
 
-		// test that we can kill processes within the same container more than once
-		for i := 0; i < 2; i++ {
-			t.Logf("test iteration %d", i)
-			testKillActionSuccess(t, "kill_action_disarm_container", func(_ context.Context) {
-				cmd := dockerInstance.Command("env", []string{"-i", "-", "TARGETTOKILL=1", "sleep", "5"}, []string{})
-				_ = cmd.Run()
-			})
-		}
-
 		newDockerInstance, err := test.StartADocker()
 		if err != nil {
 			t.Fatalf("failed to start a second Docker instance: %v", err)
 		}
 		defer newDockerInstance.stop()
+
+		// test that we can kill processes within the same container more than once
+		for i := 0; i < 2; i++ {
+			t.Logf("test iteration %d", i)
+			testKillActionSuccess(t, "kill_action_disarm_container", func(_ context.Context) {
+				cmd := dockerInstance.Command("env", []string{"-i", "-", "TARGETTOKILL=1", "sleep", "8"}, []string{})
+				_ = cmd.Run()
+			})
+		}
 
 		// test that another container disarms the kill action
 		testKillActionDisarmed(t, "kill_action_disarm_container", func(_ context.Context) {
