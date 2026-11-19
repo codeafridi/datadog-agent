@@ -529,10 +529,8 @@ metrics:
       description: >-
         Whether the GPU device is unhealthy. On NVIDIA GPUs, the health the
         Kubernetes device plugin reports to the kubelet. On AMD GPUs, 1 when
-        errors.ecc.uncorrected.total or errors.amdgpu.total with type:ras_fatal
-        is above 0, both counted since the driver loaded; 0 requires the ECC
-        count and, where the fatal count is reported (see errors.amdgpu.total),
-        a readable fatal count.
+        errors.ecc.uncorrected.total is above 0, that is after an uncorrectable
+        ECC error since the driver loaded, and not reported without that count.
       aggregation: absolute_usage
     tagsets:
       - device
@@ -778,30 +776,6 @@ metrics:
       device_modes:
         mig: false
         mig_parent: true
-        physical: true
-        vgpu: false
-  errors.amdgpu.total:
-    metadata:
-      metric_type: gauge
-      unit: error
-      description: >-
-        AMD GPU RAS events counted by the amdgpu driver since it loaded
-        (ras/event_state), by type: fatal errors (ras_fatal), and creations and
-        consumptions of poisoned data (ras_poison_creation,
-        ras_poison_consumption). Not reported on a virtual function, for a GPU
-        in an XGMI hive with other GPUs (which share the counts), with unified
-        RAS, or without ras/event_state (before Linux 6.11).
-      aggregation: lifetime_error
-    tagsets:
-      - device
-    custom_tags:
-      - origin
-      - type
-    support:
-      amd_only: true
-      unsupported_architectures: []
-      device_modes:
-        mig: false
         physical: true
         vgpu: false
   errors.xid:
