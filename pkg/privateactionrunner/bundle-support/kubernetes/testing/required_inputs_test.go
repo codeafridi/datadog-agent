@@ -13,16 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	testhelpers "github.com/DataDog/datadog-agent/pkg/privateactionrunner/bundle-support/test"
-	core "github.com/DataDog/datadog-agent/pkg/privateactionrunner/bundles/kubernetes/core"
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/types"
 )
 
 func generatedActionTask(inputs map[string]interface{}) *types.Task {
 	return testhelpers.NewTestTask("test", "test", &types.Attributes{Inputs: inputs})
-}
-
-func TestGeneratedActionsRejectMissingInputs(t *testing.T) {
-	assertGeneratedActionsRejectMissingInputs(t, core.NewKubernetesCore(), []string{"Service"})
 }
 
 func assertGeneratedActionsRejectMissingInputs(t *testing.T, bundle types.Bundle, resources []string) {

@@ -7,7 +7,6 @@ package com_datadoghq_kubernetes_core
 
 import (
 	"context"
-	"errors"
 
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/libs/privateconnection"
 
@@ -35,10 +34,6 @@ func (h *DeleteNamespaceHandler) Run(
 	inputs, err := types.ExtractInputs[DeleteNamespaceInputs](task)
 	if err != nil {
 		return nil, err
-	}
-
-	if inputs.DeleteFields == nil || inputs.Name == "" {
-		return nil, errors.New("name is required")
 	}
 
 	client, err := support.KubeClient(credential)

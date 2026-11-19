@@ -7,7 +7,6 @@ package com_datadoghq_kubernetes_core
 
 import (
 	"context"
-	"errors"
 
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/libs/privateconnection"
 
@@ -41,13 +40,6 @@ func (h *GetLimitRangeHandler) Run(
 	inputs, err := types.ExtractInputs[GetLimitRangeInputs](task)
 	if err != nil {
 		return nil, err
-	}
-
-	if inputs.GetFields == nil || inputs.Name == "" {
-		return nil, errors.New("name is required")
-	}
-	if inputs.Namespace == "" {
-		return nil, errors.New("namespace is required")
 	}
 
 	client, err := support.KubeClient(credential)

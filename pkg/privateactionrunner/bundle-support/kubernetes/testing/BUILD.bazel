@@ -10,7 +10,6 @@ dd_agent_go_test(
     deps = [
         "//pkg/privateactionrunner/bundle-support/test",
         "//pkg/privateactionrunner/bundles/kubernetes/autoscaling",
-        "//pkg/privateactionrunner/bundles/kubernetes/core",
         "//pkg/privateactionrunner/bundles/kubernetes/rbac",
         "//pkg/privateactionrunner/libs/privateconnection",
         "//pkg/privateactionrunner/types",

@@ -7,7 +7,6 @@ package com_datadoghq_kubernetes_networking
 
 import (
 	"context"
-	"errors"
 
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/libs/privateconnection"
 
@@ -37,10 +36,6 @@ func (h *DeleteMultipleNetworkPoliciesHandler) Run(
 	inputs, err := types.ExtractInputs[DeleteMultipleNetworkPoliciesInputs](task)
 	if err != nil {
 		return nil, err
-	}
-
-	if inputs.Namespace == "" {
-		return nil, errors.New("namespace is required")
 	}
 
 	client, err := support.KubeClient(credential)
