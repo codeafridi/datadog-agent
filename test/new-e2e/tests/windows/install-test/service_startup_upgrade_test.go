@@ -152,7 +152,7 @@ func (s *testUpgradeServiceProtectionSuite) TestFleetRemovalKeepsServices() {
 		s.Require().Equal(windowsCommon.SERVICE_DISABLED, setting.startType, "%s must remain disabled between Fleet packages", name)
 	}
 
-	s.Require().NoError(windowsCommon.InstallMSI(vm, msi, `DD_INSTALL_ONLY=1`, filepath.Join(s.SessionOutputDir(), "fleet-reinstall.log")))
+	s.Require().NoError(windowsCommon.InstallMSI(vm, msi, `DD_INSTALL_ONLY=1 FLEET_INSTALL=1`, filepath.Join(s.SessionOutputDir(), "fleet-reinstall.log")))
 	s.assertServiceStartupDefaults()
 	s.Require().NoError(windowsCommon.StartService(vm, "datadogagent"))
 	RequireAgentVersionRunningWithNoErrors(s.T(), s.NewTestClientForHost(vm), s.AgentPackage.AgentVersion())
