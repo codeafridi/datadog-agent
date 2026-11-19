@@ -8,16 +8,60 @@ package module
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	sysconfigtypes "github.com/DataDog/datadog-agent/pkg/system-probe/config/types"
+	"github.com/DataDog/datadog-agent/pkg/util/fxutil/logging"
 )
 
 type startupTestModule struct {
 	registerErr    error
 	registerCalled bool
+}
+
+type shutdownTestModule struct {
+	startupTestModule
+	closed int
+}
+
+func (m *shutdownTestModule) Close() { m.closed++ }
+
+type tracedShutdownTestModule struct {
+	shutdownTestModule
+	phase *logging.StartupPhase
+}
+
+func (m *tracedShutdownTestModule) CloseWithTrace(phase *logging.StartupPhase) {
+	m.phase = phase
+	m.closed++
+}
+
+func TestCloseWithTraceDispatchAndIdempotence(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			previous := l
+			t.Cleanup(func() { l = previous })
+			plain := &shutdownTestModule{}
+			traced := &tracedShutdownTestModule{}
+			l = &loader{modules: map[sysconfigtypes.ModuleName]Module{"plain": plain, "traced": traced}}
+			var phase *logging.StartupPhase
+			if enabled {
+				logger := &logging.FxTracingLogger{}
+				logger.EnableSpansSending("8126")
+				phase = logging.StartStartupTrace(logger, "stopSystemProbe", "test").StartPhase("module.Close")
+			}
+			CloseWithTrace(phase)
+			CloseWithTrace(phase)
+			require.Equal(t, 1, plain.closed)
+			require.Equal(t, 1, traced.closed, "the traced method must replace, rather than duplicate, Close")
+			require.Equal(t, enabled, traced.phase != nil)
+			require.Empty(t, l.modules)
+			require.True(t, l.closed)
+		})
+	}
 }
 
 func (*startupTestModule) GetStats() map[string]interface{} { return nil }

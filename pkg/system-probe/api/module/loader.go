@@ -212,7 +212,11 @@ func CloseWithTrace(trace *logging.StartupPhase) {
 			phase.Finish(nil)
 		}
 		phase := trace.StartPhase("module." + string(name) + ".close")
-		mod.Close()
+		if traced, ok := mod.(interface{ CloseWithTrace(*logging.StartupPhase) }); ok {
+			traced.CloseWithTrace(phase)
+		} else {
+			mod.Close()
+		}
 		phase.Finish(nil)
 		delete(l.modules, name)
 	})

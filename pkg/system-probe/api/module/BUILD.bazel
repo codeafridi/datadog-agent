@@ -62,6 +62,7 @@ dd_agent_go_test(
     gotags_sets = [["bpf"]],
     deps = [
         "//pkg/system-probe/config/types",
+        "//pkg/util/fxutil/logging",
         "@com_github_stretchr_testify//require",
     ],
 )

@@ -146,6 +146,23 @@ calls, the expvar server, profiling, memory monitoring and log flushing.
 Both roots also include each executed Fx stop hook, named by its function.
 Nested durations include their children; do not sum parents and children.
 
+The `module.event_monitor.close` span contains finer shutdown phases:
+
+- `event_monitor.Probe.Stop`: producer cancellation, worker waits and, on Linux,
+  `ebpf_probe.Manager.StopReaders`.
+- `event_monitor.consumer.<ID>.Stop`: each registered consumer. The CWS consumer
+  also records reloader, rule-engine, worker, API-server and gRPC-server teardown
+  under `cws.*` resources.
+- `event_monitor.stats.cancel` and `event_monitor.stats.Wait`: stats sender teardown.
+- `event_monitor.Probe.Close`: on Linux, separate `ebpf_probe.*` resources cover
+  namespace-resolver stop, raw-packet collection close, name-mapping removal,
+  telemetry unregister, `ebpf_probe.Manager.Stop`, eRPC close and resolver close.
+
+All of these are `operation_name:stopSystemProbe.phase` spans in the same trace.
+`ebpf_probe.Manager.Stop` includes the dependency's reader/probe/map cleanup;
+it does not create a span for each probe or each concurrent detach worker.
+Existing cleanup ordering, error handling and the tracing opt-in are unchanged.
+
 Shutdown delivery is independent of the local core/trace-agent processes. After
 Fx stops, the process sends a gzip-compressed AgentPayload directly to the
 configured primary APM intake (`site` / `apm_config.apm_dd_url`), or the configured
