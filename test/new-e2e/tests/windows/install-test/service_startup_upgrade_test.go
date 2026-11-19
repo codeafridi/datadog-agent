@@ -125,13 +125,22 @@ func (s *testUpgradeServiceProtectionSuite) TestUpgradeServiceProtection() {
 func (s *testUpgradeServiceProtectionSuite) TestFleetRemovalKeepsServices() {
 	vm := s.Env().RemoteHost
 	msi := s.installAgentPackage(vm, s.AgentPackage, windowsAgent.WithInstallOnly("1"))
+	_, agentUser, err := windowsAgent.GetAgentUserFromRegistry(vm)
+	s.Require().NoError(err)
+	configDir, err := windowsAgent.GetConfigRootFromRegistry(vm)
+	s.Require().NoError(err)
 	defer func() {
 		// A failed assertion between Fleet removal and reinstall must not leave
 		// orphaned registrations that break a retry on the same VM.
 		if _, err := windowsAgent.GetDatadogAgentProductCode(vm); err != nil && len(s.captureProtectedServiceStartup()) != 0 {
 			s.Assert().NoError(windowsCommon.InstallMSI(vm, msi, `DD_INSTALL_ONLY=1`, filepath.Join(s.SessionOutputDir(), "cleanup-reinstall.log")))
 		}
-		s.cleanupAgent()
+		if _, err := windowsAgent.GetDatadogAgentProductCode(vm); err == nil {
+			s.cleanupAgent()
+		} else {
+			s.Assert().NoError(windowsCommon.RemoveLocalUser(vm, agentUser))
+			s.Assert().NoError(vm.RemoveAll(configDir))
+		}
 	}()
 	product, err := windowsAgent.GetDatadogAgentProductCode(vm)
 	s.Require().NoError(err)
@@ -150,6 +159,20 @@ func (s *testUpgradeServiceProtectionSuite) TestFleetRemovalKeepsServices() {
 
 	s.Require().NoError(windowsCommon.UninstallMSI(vm, product, "FLEET_INSTALL=1 FLEET_PURGE=1", filepath.Join(s.SessionOutputDir(), "fleet-purge.log")))
 	s.Require().Empty(s.captureProtectedServiceStartup(), "Fleet purge must delete retained service registrations")
+
+	// Purge must also work after Fleet already unregistered the MSI.
+	s.Require().NoError(windowsCommon.InstallMSI(vm, msi, `DD_INSTALL_ONLY=1`, filepath.Join(s.SessionOutputDir(), "fleet-orphan-install.log")))
+	installPath, err := windowsAgent.GetInstallPathFromRegistry(vm)
+	s.Require().NoError(err)
+	installerCopy := strings.TrimSpace(vm.MustExecute(`[System.IO.Path]::Combine($env:TEMP, [guid]::NewGuid().ToString('N') + '.exe')`))
+	defer vm.Remove(installerCopy) //nolint:errcheck
+	_, err = vm.Execute(fmt.Sprintf(`Copy-Item -LiteralPath '%s\bin\datadog-installer.exe' -Destination '%s'`, installPath, installerCopy))
+	s.Require().NoError(err)
+	s.Require().NoError(windowsCommon.UninstallMSI(vm, product, "FLEET_INSTALL=1", filepath.Join(s.SessionOutputDir(), "fleet-orphan-uninstall.log")))
+	s.Require().Len(s.captureProtectedServiceStartup(), len(protectedServiceNames))
+	_, err = vm.Execute(fmt.Sprintf(`& '%s' purge; if ($LASTEXITCODE -ne 0) { throw "purge failed: $LASTEXITCODE" }`, installerCopy))
+	s.Require().NoError(err)
+	s.Require().Empty(s.captureProtectedServiceStartup(), "purge must delete services even when the MSI is already absent")
 }
 
 func (s *baseAgentMSISuite) assertServiceStartupDefaults() {
